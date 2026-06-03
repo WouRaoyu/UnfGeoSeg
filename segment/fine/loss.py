@@ -1,24 +1,22 @@
-"""Confidence-constrained loss (Manuscript Eq. 5-6).
+"""Probability-constrained loss (Manuscript Eq. 5-6).
 
 ``L = L' + lambda * D_KL(P || Q)``
 
 * ``L'`` is the standard segmentation loss (Dice + cross-entropy).
-* ``P`` is the pseudo-label categorical distribution reconstructed per voxel
-  from the hard label ``c`` and its confidence ``p``:
+* ``P`` is the binary soft pseudo-label distribution reconstructed directly
+  from the coarse foreground probability ``p_fg``:
 
-      P[c] = p,   P[k != c] = (1 - p) / (C - 1)
+      P[background] = 1 - p_fg,   P[foreground] = p_fg
 
-  i.e. a sharp distribution when the coarse classifier is confident and a flat
-  one when it is not.
 * ``Q = softmax(net_output)`` is the network prediction.
 
-The KL term down-weights gradients from low-confidence (flat-``P``) pseudo-labels
--- a probabilistic noise-control mechanism for the weak supervision. With
-``lambda = 0`` the loss reduces exactly to ``L'`` (used as the no-constraint
-baseline in the lambda-sensitivity experiment).
+The KL term uses the full coarse binary probability instead of first collapsing
+it to ``hard label + confidence``. With ``lambda = 0`` the loss reduces exactly
+to ``L'`` (used as the no-constraint baseline in the lambda-sensitivity
+experiment).
 
 Deep supervision is disabled for this trainer so a single full-resolution
-output/target/confidence triple is used (keeps the confidence aligned without
+output/target/probfg triple is used (keeps the probability map aligned without
 multi-resolution downsampling of the soft labels).
 """
 
@@ -74,31 +72,25 @@ class ConfidenceConstrainedLoss(nn.Module):
         self.lambda_kl = float(lambda_kl)
         self.base_loss = base_loss if base_loss is not None else _build_base_loss()
 
-    def soft_target(
-        self, hard: torch.Tensor, confidence: torch.Tensor
-    ) -> torch.Tensor:
-        """Reconstruct P (B, C, ...) from hard label + confidence."""
-        if hard.ndim == confidence.ndim and hard.shape[1] == 1:
-            hard = hard[:, 0]
-            confidence = confidence[:, 0]
-        C = self.num_classes
-        oh = F.one_hot(hard.long(), C)
-        oh = oh.permute(0, -1, *range(1, oh.ndim - 1)).float()  # (B, C, ...)
-        conf = confidence.unsqueeze(1).clamp(1e-4, 1 - 1e-4)  # (B,1,...)
-        other = (1.0 - conf) / max(C - 1, 1)
-        P = oh * conf + (1.0 - oh) * other
-        return P / P.sum(dim=1, keepdim=True)
+    def soft_target(self, probfg: torch.Tensor) -> torch.Tensor:
+        """Reconstruct binary P (B, 2, ...) directly from foreground probability."""
+        if self.num_classes != 2:
+            raise ValueError("probfg soft targets require an independent binary run")
+        if probfg.ndim >= 2 and probfg.shape[1] == 1:
+            probfg = probfg[:, 0]
+        fg = probfg.clamp(1e-4, 1 - 1e-4)
+        return torch.stack((1.0 - fg, fg), dim=1)
 
     def forward(
         self,
         net_output: torch.Tensor,
         hard_target: torch.Tensor,
-        confidence: torch.Tensor | None = None,
+        probfg: torch.Tensor | None = None,
     ) -> torch.Tensor:
         base = self.base_loss(net_output, hard_target)
-        if confidence is None or self.lambda_kl == 0.0:
+        if probfg is None or self.lambda_kl == 0.0:
             return base
-        P = self.soft_target(hard_target, confidence)
+        P = self.soft_target(probfg)
         logQ = F.log_softmax(net_output, dim=1)
         # KL(P || Q) = sum_k P_k (log P_k - log Q_k), averaged over voxels/batch
         kl = (P * (torch.log(P.clamp_min(1e-8)) - logQ)).sum(dim=1).mean()

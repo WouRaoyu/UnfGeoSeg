@@ -9,8 +9,8 @@ of nnU-Net's ``PlainConvUNet`` (read from the plan's ``arch_kwargs``) and simply
 inserts a Transformer encoder at the bottleneck.
 
 Deep supervision is intentionally disabled (single full-resolution head) so the
-confidence-constrained loss stays aligned with the pseudo-label confidence map
-(see ``segment.fine.loss``).
+probability-constrained loss stays aligned with the probfg soft-target map (see
+``segment.fine.loss``).
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
-"""Experiment 5 - sensitivity to the confidence-loss coefficient lambda.
+"""Experiment 5 - sensitivity to the probability-loss coefficient lambda.
 
 Aggregates held-out TFR F1, borehole F1, boundary/chainage error and mean
 entropy across models trained with different lambda (incl. lambda=0, the
-no-confidence-constraint baseline). Training itself is driven by
+no-probability-constraint baseline). Training itself is driven by
 ``scripts/run_all.ps1`` (which sets ``UNFAVORSEG_LAMBDA`` and trains one model
 per value); this module collects the per-lambda prediction directories and
 assembles the table.

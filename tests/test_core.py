@@ -60,18 +60,18 @@ def test_confidence_loss_reduces_to_base_at_lambda0():
     y = net(x)
     assert y.shape == (1, 2, 16, 16, 16)
     target = torch.randint(0, 2, (1, 1, 16, 16, 16))
-    conf = torch.rand(1, 1, 16, 16, 16)
+    probfg = torch.rand(1, 1, 16, 16, 16)
     l0 = ConfidenceConstrainedLoss(2, lambda_kl=0.0)
-    assert abs(float(l0(y, target, conf)) - float(l0.base_loss(y, target))) < 1e-6
+    assert abs(float(l0(y, target, probfg)) - float(l0.base_loss(y, target))) < 1e-6
 
 
-def test_soft_target_normalized():
-    L = ConfidenceConstrainedLoss(num_classes=3)
-    hard = torch.tensor([[[[[0, 1, 2]]]]]).long()
-    conf = torch.tensor([[[[[0.8, 0.6, 0.9]]]]]).float()
-    P = L.soft_target(hard, conf)
+def test_soft_target_uses_foreground_probability():
+    L = ConfidenceConstrainedLoss(num_classes=2)
+    probfg = torch.tensor([[[[[0.1, 0.7, 0.5]]]]]).float()
+    P = L.soft_target(probfg)
     assert torch.allclose(P.sum(1), torch.ones_like(P.sum(1)), atol=1e-5)
-    assert abs(float(P[0, 0, 0, 0, 0]) - 0.8) < 1e-5
+    assert abs(float(P[0, 0, 0, 0, 0]) - 0.9) < 1e-5
+    assert abs(float(P[0, 1, 0, 0, 1]) - 0.7) < 1e-5
 
 
 def test_resolve_label_path_strict_per_class():
@@ -94,11 +94,16 @@ def test_resolve_label_path_strict_per_class():
             raise AssertionError("strict per-class lookup should reject fallback labels")
 
 
-def test_list_predicted_cases_skips_probability_and_confidence_maps():
+def test_list_predicted_cases_skips_probability_and_probfg_maps():
     predictions = pytest.importorskip("segment.experiments.predictions")
     with TemporaryDirectory() as tmp:
         pred = Path(tmp)
-        for name in ("case001.nii.gz", "prob_case001.nii.gz", "conf_case001.nii.gz"):
+        for name in (
+            "case001.nii.gz",
+            "prob_case001.nii.gz",
+            "probfg_case001.nii.gz",
+            "conf_case001.nii.gz",
+        ):
             (pred / name).touch()
         assert predictions.list_predicted_cases(pred) == ["case001"]
 

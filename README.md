@@ -9,9 +9,9 @@ geology**, implementing the method in `Manuscript.docx` on top of
 P-wave (vp), S-wave (vs), burial depth
         │
         ▼  local statistical features (mean/median/mode/max/min over a window)
- Random Forest  ──►  per-voxel pseudo-labels + confidence (soft labels)
+ Random Forest  ──►  per-voxel pseudo-labels + probfg soft labels
         │
-        ▼  confidence-constrained loss  L = L' + λ·KL(P‖Q)
+        ▼  probability-constrained loss  L = L' + λ·KL(P‖Q)
  3D-TransUNet (nnU-Net trainer)  ──►  probabilistic 3D interpretation
 ```
 
@@ -25,8 +25,8 @@ borehole/probe-hole logs**.
 | Path | Purpose |
 |---|---|
 | `segment/data/` | alignment (`Mg`, burial-depth field), local statistical sampling (Eq. 2-4), leakage-controlled splits, nnU-Net dataset assembly |
-| `segment/coarse/` | vectorized window features, Random-Forest classifier, sliding-box pseudo-label + confidence generation |
-| `segment/fine/` | `TransUNet3D` backbone, confidence-constrained loss (Eq. 5-6), soft-label dataset builder, `nnUNetTrainerTransUNet*` trainers |
+| `segment/coarse/` | vectorized window features, Random-Forest classifier, sliding-box pseudo-label + foreground-probability generation |
+| `segment/fine/` | `TransUNet3D` backbone, probability-constrained loss (Eq. 5-6), soft-label dataset builder, `nnUNetTrainerTransUNet*` trainers |
 | `segment/experiments/` | metrics + `e1..e5`, ablations, uncertainty (Table 6), inference time |
 | `segment/cli.py` | `segment <command>` entry points |
 | `scripts/run_all.ps1` | end-to-end reproduction |
@@ -50,7 +50,7 @@ Data follows the standard nnU-Net layout. `Dataset005_Hardness` (channels
 The manuscript's geology types (fracture zone / soft rock / water-rich zone) can
 **spatially overlap** (a voxel may belong to several at once), so they are NOT a
 single mutually-exclusive label map. Each type is treated as an **independent
-0/1 binary problem** with its own pseudo-labels, confidence map, model and
+0/1 binary problem** with its own pseudo-labels, foreground-probability map, model and
 foreground probability map. Supply `Dataset010_Geology` with the same channel convention
 and one **per-class binary mask per type**:
 
@@ -78,20 +78,20 @@ each of `fracture_zone` / `soft_rock` / `water_rich_zone` and suffix the
 artifacts — or just use `scripts/run_all.ps1 -Classes ...`.
 
 ```powershell
-# 1. coarse classifier + pseudo-labels (+ foreground probability + confidence)
+# 1. coarse classifier + pseudo-labels (+ foreground probability/probfg)
 segment coarse-train --dataset Dataset005_Hardness --class unfavorable --out models/rf_unfavorable.joblib
 segment pseudolabel  --dataset Dataset005_Hardness --class unfavorable --model models/rf_unfavorable.joblib `
                         --out $env:nnUNet_raw/_pseudolabels_Dataset005_unfavorable
 
-# 2. confidence-augmented dataset ([vp, vs, depth, confidence] + binary pseudo-label)
+# 2. probability-augmented dataset ([vp, vs, depth, probfg] + binary pseudo-label)
 segment build-cc --src Dataset005_Hardness --class unfavorable `
                     --pseudolabels $env:nnUNet_raw/_pseudolabels_Dataset005_unfavorable `
                     --dst Dataset011_HardnessCC_unfavorable
 
-# 3. nnU-Net preprocess; keep confidence channel un-normalized; write splits
+# 3. nnU-Net preprocess; keep probfg carrier channel un-normalized; write splits
 nnUNetv2_extract_fingerprint -d 11 --verify_dataset_integrity
 nnUNetv2_plan_experiment -d 11
-python -c "from segment.fine.dataset import patch_plans_no_norm_confidence as p; import os; p(os.path.join(os.environ['nnUNet_preprocessed'],'Dataset011_HardnessCC_unfavorable'))"
+python -c "from segment.fine.dataset import patch_plans_no_norm_probfg as p; import os; p(os.path.join(os.environ['nnUNet_preprocessed'],'Dataset011_HardnessCC_unfavorable'))"
 nnUNetv2_preprocess -d 11 -c 3d_fullres
 segment make-splits --dataset Dataset011_HardnessCC_unfavorable
 
@@ -105,10 +105,11 @@ nnUNetv2_train 11 3d_fullres 0 -tr nnUNetTrainerTransUNet     # plain 3D-TransUN
 nnUNetv2_train 11 3d_fullres 0 -tr nnUNetTrainerUnfavorSeg    # nnU-Net baseline
 ```
 
-`prob_<case>.nii.gz` is the foreground probability `P(class=1)`.
-`conf_<case>.nii.gz` is the hard-label confidence used as the 4th input channel
-for the confidence-constrained trainer. The trainer reads that channel for the
-KL term; `λ=0` reduces the loss exactly to the standard nnU-Net loss.
+`probfg_<case>.nii.gz` (and legacy `prob_<case>.nii.gz`) is the foreground
+probability `P(class=1)`. The probability-constrained trainer carries this map as
+the 4th nnU-Net image channel only to keep it aligned with crops/augmentation;
+the network wrapper drops it before forward and the loss reads it for the KL
+soft-target term. `λ=0` reduces the loss exactly to the standard nnU-Net loss.
 
 ## Experiments (maps to manuscript tables)
 
@@ -157,12 +158,12 @@ base Dice+CE objective, then test `UNFAVORSEG_LAMBDA=0.1/0.3` and lower
 ## Notes & assumptions
 
 * **Independent binary types** — geology types may overlap, so each is run as a
-  separate 0/1 problem (own model, pseudo-labels, confidence, probability map);
+  separate 0/1 problem (own model, pseudo-labels, probability map);
   results are never merged. `Dataset005_Hardness` is the single-type smoke case.
   Provide per-class binary masks (`labelsTr/<case>_<type>.nii.gz`) +
   `geology_classes` in `dataset.json` to populate the final manuscript numbers.
 * **Deep supervision is disabled** for the TransUNet trainers so the single
-  full-resolution output stays aligned with the confidence map.
+  full-resolution output stays aligned with the probfg soft-target map.
 * **TFR / borehole records** — when real field records are unavailable, the
   fine-stage evaluators synthesize sparse faces / 1-D trajectories from the
   reference labels (`experiments/validation_records.py`) so the pipeline is

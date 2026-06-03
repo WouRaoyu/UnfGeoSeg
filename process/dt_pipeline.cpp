@@ -18,10 +18,12 @@
  *
  *   export  Converts the inference result volumes (.vdb) to a nnU-Net / MONAI
  *           style nii.gz dataset for the downstream fine-grained 3D-TransUNet.
- *           For each volume listed in dataset.json it writes, per type:
+ *           For each volume listed in dataset.json it writes one nnU-Net-ready
+ *           binary dataset per selected type:
  *             images{Tr,Ts}/<case>_0000|0001|0002.nii.gz   (vp / vs / depth)
- *             labels{Tr,Ts}/<case>.nii.gz                   (hard label, int)
- *             probs{Tr,Ts}/<case>.nii.gz                    (soft prob, float)
+ *             images{Tr,Ts}/<case>_0003.nii.gz             (probfg carrier)
+ *             labels{Tr,Ts}/<case>.nii.gz                  (hard pseudo-label)
+ *             probs{Tr,Ts}/<case>.nii.gz                   (probfg sidecar)
  *
  *   Unlike the original project tools, the inference stage no longer walks a
  *   project/site/TSP directory tree. All `input_*.vdb` volumes are expected to
@@ -1079,9 +1081,12 @@ openvdb::FloatGrid::Ptr clipProcess(openvdb::GridBase::ConstPtr input, const ope
 
 openvdb::FloatGrid::Ptr filterProcess(openvdb::GridBase::ConstPtr input, float ratio, int width)
 {
-    float background = ratio > 0.5f ? 0.f : 1.f;
-
     auto grid = openvdb::gridConstPtrCast<openvdb::FloatGrid>(input);
+    if (!grid) return nullptr;
+
+    if (width <= 0) return grid->deepCopy();
+
+    float background = ratio > 0.5f ? 0.f : 1.f;
 
     auto cpyGrid = grid->deepCopy(); //! Copy to new grid
     openvdb::tools::changeBackground(cpyGrid->tree(), background);
@@ -1108,9 +1113,11 @@ bool formatParse(openvdb::GridBase::ConstPtr grid, const fs::path& pth,
     auto size = fptr->voxelSize();
     auto bbox = fptr->evalActiveVoxelBoundingBox();
 
-    //! account for the median-filter border
-    bbox.min() += openvdb::Coord(width);
-    bbox.max() -= openvdb::Coord(width);
+    //! account for the median-filter border only when smoothing is enabled
+    if (width > 0) {
+        bbox.min() += openvdb::Coord(width);
+        bbox.max() -= openvdb::Coord(width);
+    }
 
     auto ext = bbox.extents();
     if (ext.x() <= 0 || ext.y() <= 0 || ext.z() <= 0) {
@@ -1142,8 +1149,12 @@ bool formatParse(openvdb::GridBase::ConstPtr grid, const fs::path& pth,
         }
     }
     else if (vtkType == VTK_INT) {
-        auto flt = filterProcess(fptr, ratio, width);
-        auto acc = flt->getConstAccessor();
+        auto labelGrid = width > 0 ? filterProcess(fptr, ratio, width) : fptr->deepCopy();
+        if (!labelGrid) {
+            std::cout << " Failed (invalid label grid)\n";
+            return false;
+        }
+        auto acc = labelGrid->getConstAccessor();
         for (int z = 0; z < dims[2]; z++) {
             for (int y = 0; y < dims[1]; y++) {
                 for (int x = 0; x < dims[0]; x++) {
@@ -1220,13 +1231,11 @@ static bool exportItem(const fs::path& resultVdb, const fs::path& inputVdb,
         return false;
     }
 
-    const std::string suffix = "_" + className;
-
     bool ok = true;
     ok &= formatParse(maybeClip(typeGrid, clip, extent),
-        labelsDir / (caseId + suffix + ".nii.gz"), ratio, width, VTK_INT);
+        labelsDir / (caseId + ".nii.gz"), ratio, width, VTK_INT);
     ok &= formatParse(maybeClip(probGrid, clip, extent),
-        probsDir / (caseId + suffix + ".nii.gz"), ratio, width, VTK_FLOAT);
+        probsDir / (caseId + ".nii.gz"), ratio, width, VTK_FLOAT);
 
     auto dataGrids = loadGrids(inputVdb);
     if (!dataGrids) {
@@ -1245,6 +1254,10 @@ static bool exportItem(const fs::path& resultVdb, const fs::path& inputVdb,
             imagesDir / (caseId + imgSuffix), ratio, width, VTK_FLOAT);
     }
 
+    // Existing infer results store this selected type's foreground probability.
+    ok &= formatParse(maybeClip(probGrid, clip, extent),
+        imagesDir / (caseId + "_0003.nii.gz"), ratio, width, VTK_FLOAT);
+
     return ok;
 }
 
@@ -1254,9 +1267,10 @@ struct ExportOptions
     fs::path outDir;           ///< output dataset root
     std::string type = "fragment";
     std::string className;
-    int width = 3;
-    float minr = 0.3f;
-    float maxr = 0.7f;
+    int width = 0;
+    bool ratioFilter = false;
+    float minr = 0.0f;
+    float maxr = 1.0f;
     bool clip = false;
     openvdb::Vec3i extent{ 0, 0, 0 };
 };
@@ -1274,8 +1288,9 @@ static bool parseExportArgs(int argc, char** argv, ExportOptions& opt)
         else if (a == "--type") opt.type = next("--type");
         else if (a == "--class-name") opt.className = next("--class-name");
         else if (a == "--width") opt.width = std::stoi(next("--width"));
-        else if (a == "--minr") opt.minr = std::stof(next("--minr"));
-        else if (a == "--maxr") opt.maxr = std::stof(next("--maxr"));
+        else if (a == "--ratio-filter") opt.ratioFilter = true;
+        else if (a == "--minr") { opt.minr = std::stof(next("--minr")); opt.ratioFilter = true; }
+        else if (a == "--maxr") { opt.maxr = std::stof(next("--maxr")); opt.ratioFilter = true; }
         else if (a == "--extent") {
             std::vector<int> v; std::string cur;
             std::string s = next("--extent");
@@ -1285,6 +1300,8 @@ static bool parseExportArgs(int argc, char** argv, ExportOptions& opt)
         }
         else std::cerr << "Unknown option ignored: " << a << "\n";
     }
+    if (opt.width < 0) throw std::runtime_error("--width must be >= 0");
+    if (opt.minr > opt.maxr) throw std::runtime_error("--minr must be <= --maxr");
     return !opt.dataset.empty() && !opt.outDir.empty();
 }
 
@@ -1295,7 +1312,8 @@ static void writeDatasetJson(const fs::path& outDir, const std::string& classNam
     ds["channel_names"] = {
         { "0", "vp" },
         { "1", "vs" },
-        { "2", "depth" }
+        { "2", "depth" },
+        { "3", "probfg" }
     };
     ds["labels"] = {
         { "background", 0 },
@@ -1304,9 +1322,9 @@ static void writeDatasetJson(const fs::path& outDir, const std::string& classNam
     ds["numTraining"] = static_cast<int>(numTraining);
     ds["file_ending"] = ".nii.gz";
     ds["label_source"] = "pseudo_label";
-    ds["probability_role"] = "soft_pseudo_label_confidence_prior";
+    ds["probability_role"] = "foreground_probability_soft_target";
 
-    ds["geology_classes"] = { "fracture_zone", "soft_rock", "water_rich_zone" };
+    ds["geology_classes"] = { className };
 
     std::ofstream out(outDir / "dataset.json");
     out << ds.dump(2);
@@ -1384,9 +1402,9 @@ static int run(const ExportOptions& opt)
             ratio = item["status"][sIdx].get<float>();
         }
 
-        // Training samples are filtered to informative positive ratios; held-out
-        // validation samples are always exported.
-        if (!isTest && !(ratio > opt.minr && ratio < opt.maxr)) {
+        // Optional training-sample filtering by informative positive ratios;
+        // held-out validation samples are always exported.
+        if (opt.ratioFilter && !isTest && !(ratio > opt.minr && ratio < opt.maxr)) {
             ++skipped;
             continue;
         }
@@ -1419,8 +1437,9 @@ static void usage(const char* prog)
 {
     std::cerr << "Usage: " << prog << " export"
         << " --dataset <dataset.json> --out <dir> --type <name|idx>"
-           " [--class-name <nnunet_label>] [--width 3]"
-           " [--minr 0.3] [--maxr 0.7] [--extent x,y,z]\n";
+           " [--class-name <nnunet_label>] [--width 0]"
+           " [--ratio-filter --minr 0.3 --maxr 0.7]"
+           " [--extent x,y,z]\n";
 }
 
 } // namespace exporter

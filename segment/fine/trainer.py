@@ -3,24 +3,21 @@
 * ``nnUNetTrainerTransUNet``   -- plain 3D-TransUNet baseline (swaps the network
   architecture, standard nnU-Net loss). Used for the uncertainty comparison.
 * ``nnUNetTrainerTransUNetCC`` -- the proposed method: 3D-TransUNet trained with
-  the confidence-constrained loss ``L = L' + lambda * KL(P || Q)``.
+  the probability-constrained loss ``L = L' + lambda * KL(P || Q)``.
 
-The confidence (soft pseudo-label) is carried as an extra input channel
-(``confidence`` = the coarse classifier's max class probability, computable from
-vp/vs/depth at both train and inference time, so there is no train/test
-asymmetry and standard nnU-Net inference works unchanged). ``train_step`` /
-``validation_step`` read that channel and feed it to the KL term.
+The coarse foreground probability (``probfg``) is carried as an extra image
+channel only so nnU-Net crops/augments it in lockstep with the target. The
+network wrapper drops that last channel before the forward pass; ``train_step`` /
+``validation_step`` read it only for the KL term.
 
 Deep supervision is disabled so the single full-resolution output stays aligned
-with the full-resolution confidence map.
+with the full-resolution probfg soft-target map.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Union
 
-import numpy as np
 import torch
 from torch import autocast, nn
 
@@ -52,15 +49,47 @@ class nnUNetTrainerUnfavorSeg(_UnfavorSegEpochsMixin, nnUNetTrainer):
         super().__init__(plans, configuration, fold, dataset_json, unpack_dataset, device)
         self._set_segment_num_epochs()
 
+    @staticmethod
+    def build_network_architecture(
+        architecture_class_name: str,
+        arch_init_kwargs: dict,
+        arch_init_kwargs_req_import,
+        num_input_channels: int,
+        num_output_channels: int,
+        enable_deep_supervision: bool = True,
+    ) -> nn.Module:
+        image_channels = num_input_channels - 1 if num_input_channels == 4 else num_input_channels
+        net = nnUNetTrainer.build_network_architecture(
+            architecture_class_name,
+            arch_init_kwargs,
+            arch_init_kwargs_req_import,
+            image_channels,
+            num_output_channels,
+            enable_deep_supervision,
+        )
+        return _DropProbfgChannel(net, image_channels) if image_channels != num_input_channels else net
+
+
+class _DropProbfgChannel(nn.Module):
+    """Accept nnU-Net's 4-channel batch but expose only physical channels to net."""
+
+    def __init__(self, net: nn.Module, image_channels: int):
+        super().__init__()
+        self.net = net
+        self.image_channels = image_channels
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x[:, : self.image_channels])
+
 
 class nnUNetTrainerTransUNet(_UnfavorSegEpochsMixin, nnUNetTrainer):
-    """Plain 3D-TransUNet baseline (no confidence constraint)."""
+    """Plain 3D-TransUNet baseline (no probability constraint)."""
 
     def __init__(self, plans, configuration, fold, dataset_json, unpack_dataset=True,
                  device=torch.device("cuda")):
         super().__init__(plans, configuration, fold, dataset_json, unpack_dataset, device)
         self._set_segment_num_epochs()
-        # single full-resolution head keeps the confidence map aligned
+        # single full-resolution head keeps the probfg soft-target map aligned
         self.enable_deep_supervision = False
 
     @staticmethod
@@ -72,11 +101,13 @@ class nnUNetTrainerTransUNet(_UnfavorSegEpochsMixin, nnUNetTrainer):
         num_output_channels: int,
         enable_deep_supervision: bool = True,
     ) -> nn.Module:
-        return build_transunet(num_input_channels, num_output_channels, arch_init_kwargs)
+        image_channels = num_input_channels - 1 if num_input_channels == 4 else num_input_channels
+        net = build_transunet(image_channels, num_output_channels, arch_init_kwargs)
+        return _DropProbfgChannel(net, image_channels) if image_channels != num_input_channels else net
 
 
 class nnUNetTrainerTransUNetCC(nnUNetTrainerTransUNet):
-    """Proposed: 3D-TransUNet + confidence-constrained loss."""
+    """Proposed: 3D-TransUNet + probability-constrained loss."""
 
     def __init__(self, plans, configuration, fold, dataset_json, unpack_dataset=True,
                  device=torch.device("cuda")):
@@ -89,11 +120,29 @@ class nnUNetTrainerTransUNetCC(nnUNetTrainerTransUNet):
             lambda_kl=self.lambda_kl,
         )
 
-    # -- training/validation with the confidence channel ----------------------
     @staticmethod
-    def _split_confidence(data: torch.Tensor):
-        """Last input channel is the confidence map; the network still receives
-        the full stack (confidence is an informative input feature)."""
+    def build_network_architecture(
+        architecture_class_name: str,
+        arch_init_kwargs: dict,
+        arch_init_kwargs_req_import,
+        num_input_channels: int,
+        num_output_channels: int,
+        enable_deep_supervision: bool = True,
+    ) -> nn.Module:
+        if num_input_channels < 4:
+            raise ValueError(
+                "nnUNetTrainerTransUNetCC requires [vp, vs, depth, probfg] input channels"
+            )
+        image_channels = num_input_channels - 1
+        net = build_transunet(image_channels, num_output_channels, arch_init_kwargs)
+        return _DropProbfgChannel(net, image_channels)
+
+    # -- training/validation with the probfg carrier channel ------------------
+    @staticmethod
+    def _split_probfg(data: torch.Tensor):
+        """Last input channel is probfg; the network wrapper drops it."""
+        if data.shape[1] < 4:
+            raise ValueError("CC training batches must include a final probfg channel")
         return data, data[:, -1:]
 
     def train_step(self, batch: dict) -> dict:
@@ -102,12 +151,12 @@ class nnUNetTrainerTransUNetCC(nnUNetTrainerTransUNet):
         if isinstance(target, list):
             target = target[0]
         target = target.to(self.device, non_blocking=True)
-        net_in, confidence = self._split_confidence(data)
+        net_in, probfg = self._split_probfg(data)
 
         self.optimizer.zero_grad(set_to_none=True)
         with autocast(self.device.type, enabled=True) if self.device.type == "cuda" else dummy_context():
             output = self.network(net_in)
-            l = self.loss(output, target, confidence)
+            l = self.loss(output, target, probfg)
 
         if self.grad_scaler is not None:
             self.grad_scaler.scale(l).backward()
@@ -127,12 +176,12 @@ class nnUNetTrainerTransUNetCC(nnUNetTrainerTransUNet):
         if isinstance(target, list):
             target = target[0]
         target = target.to(self.device, non_blocking=True)
-        net_in, confidence = self._split_confidence(data)
+        net_in, probfg = self._split_probfg(data)
 
         with autocast(self.device.type, enabled=True) if self.device.type == "cuda" else dummy_context():
             output = self.network(net_in)
             del data
-            l = self.loss(output, target, confidence)
+            l = self.loss(output, target, probfg)
 
         axes = [0] + list(range(2, output.ndim))
         if self.label_manager.has_regions:

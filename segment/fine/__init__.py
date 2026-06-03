@@ -1,5 +1,5 @@
 """Fine-grained stage: 3D-TransUNet wrapped as a custom nnU-Net trainer with a
-confidence-constrained loss.
+probability-constrained loss.
 
 Importing this subpackage is enough for nnU-Net to discover the trainers because
 they subclass ``nnUNetTrainer`` and live on the import path; nnU-Net's

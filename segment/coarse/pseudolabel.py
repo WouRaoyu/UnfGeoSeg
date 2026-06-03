@@ -1,10 +1,10 @@
-"""Voxel-level pseudo-label and confidence generation (Manuscript: Voxel-level
+"""Voxel-level pseudo-label and foreground-probability generation (Manuscript: Voxel-level
 pseudo-label and probability generation).
 
 A neighborhood sliding window is evaluated for every voxel of a training volume:
 the coarse classifier predicts a category and probability distribution from the
 window statistics, producing a *soft pseudo-label volume* that carries both the
-predicted category (hard label) and its confidence probability (soft label).
+predicted category (hard label) and foreground probability (soft label).
 Voxels outside the valid region are cropped to background.
 
 Each geology type is an independent binary run, so the coarse classifier is
@@ -13,10 +13,11 @@ convention of ``Dataset005_Hardness``:
 
 * ``labelsTr/<case>.nii.gz`` -- hard pseudo-label (uint8, ``0/1`` for this type)
 * ``labelsTr/prob_<case>.nii.gz`` -- foreground probability ``P(class=1)``
+* ``labelsTr/probfg_<case>.nii.gz`` -- canonical foreground-probability alias
 * ``labelsTr/conf_<case>.nii.gz`` -- confidence of the assigned hard class
 
-The full categorical distribution needed by the KL term is reconstructed in the
-fine stage from ``(hard label, confidence)`` (see ``segment.fine.loss``).
+The binary soft target needed by the KL term is reconstructed in the fine stage
+directly from ``probfg`` as ``[1 - Pfg, Pfg]`` (see ``segment.fine.loss``).
 """
 
 from __future__ import annotations
@@ -100,12 +101,19 @@ def write_pseudolabels(
     case_id: str,
     file_ending: str = ".nii.gz",
 ) -> Tuple[Path, Path, Path]:
-    """Write hard label, foreground probability and hard-label confidence."""
+    """Write hard label, foreground probability and hard-label confidence.
+
+    ``probfg_<case>`` is the canonical foreground-probability name for the
+    fine-stage soft target carrier. ``prob_<case>`` is retained for existing
+    reports and scripts.
+    """
     labels_dir = Path(labels_dir)
     hard_path = labels_dir / f"{case_id}{file_ending}"
     prob_path = labels_dir / f"prob_{case_id}{file_ending}"
+    probfg_path = labels_dir / f"probfg_{case_id}{file_ending}"
     conf_path = labels_dir / f"conf_{case_id}{file_ending}"
     write_volume(pl.hard, geometry, hard_path, dtype=np.uint8)
     write_volume(pl.foreground_probability, geometry, prob_path, dtype=np.float32)
+    write_volume(pl.foreground_probability, geometry, probfg_path, dtype=np.float32)
     write_volume(pl.confidence, geometry, conf_path, dtype=np.float32)
     return hard_path, prob_path, conf_path

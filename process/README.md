@@ -61,10 +61,29 @@ alongside it.
     --dataset /data/volumes/dataset.json \
     --out /data/nnunet/Dataset001 \
     --type fragment \
-    --class-name fracture_zone \
-    --width 3 --minr 0.3 --maxr 0.7 \
-    --extent 256,128,128
+    --class-name fracture_zone
 ```
 
 `--type` accepts a class name or a numeric index into the class list. Held-out
-cases go to the `*Ts` split; the rest to `*Tr` (filtered by positive ratio).
+cases go to the `*Ts` split; the rest go to `*Tr`.
+
+Each export call writes one nnU-Net-ready binary dataset for the selected type:
+`images*` contains `[vp, vs, depth, probfg]`, `labels*` contains
+`<case>.nii.gz`, and `probs*` keeps a `probfg` sidecar for inspection. Export
+each geology type to a separate dataset folder when training three independent
+binary fine-stage models.
+
+By default, export preserves the full VDB active extent for each case, performs
+no positive-ratio filtering, and does not median-filter labels. These optional
+cleaning / ROI controls are available when you explicitly want them:
+
+```bash
+./build/dt_pipeline export \
+    --dataset /data/volumes/dataset.json \
+    --out /data/nnunet/Dataset001_filtered \
+    --type fragment \
+    --class-name fracture_zone \
+    --ratio-filter --minr 0.3 --maxr 0.7 \
+    --width 3 \
+    --extent 256,128,128
+```

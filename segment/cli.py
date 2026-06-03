@@ -107,8 +107,8 @@ def cmd_coarse_train(args):
 
     dataset_dir = _resolve_dataset(args.dataset)
     cfg = effective_config(dataset_dir, args.config, args.geology_class)
-    # confidence channel (if present) is not a coarse feature
-    channels = [c for c in cfg.channels if c != "confidence"]
+    # soft-target carrier channels (if present) are not coarse physical features
+    channels = [c for c in cfg.channels if c not in {"confidence", "probfg"}]
     rec = build_records(dataset_dir, channels, cfg.half_window, cfg.statistics,
                         cfg.mode_decimals, n_per_class=args.n_per_class, seed=42,
                         class_name=cfg.classes[0],
@@ -128,7 +128,7 @@ def cmd_pseudolabel(args):
 
     dataset_dir = _resolve_dataset(args.dataset)
     cfg = effective_config(dataset_dir, args.config, args.geology_class)
-    channels = [c for c in cfg.channels if c != "confidence"]
+    channels = [c for c in cfg.channels if c not in {"confidence", "probfg"}]
     clf = CoarseClassifier.load(args.model)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -141,7 +141,7 @@ def cmd_pseudolabel(args):
                                    cfg.mode_decimals)
         write_pseudolabels(pl, geom, out_dir, case, fe)
         print(f"  pseudo-labelled {case}")
-    print(f"Wrote pseudo-labels + foreground probabilities + confidence to {out_dir}")
+    print(f"Wrote pseudo-labels + foreground probabilities/probfg to {out_dir}")
 
 
 def cmd_build_cc(args):
@@ -152,7 +152,7 @@ def cmd_build_cc(args):
     dst_root = nnunet_dirs().get("nnUNet_raw")
     dst = Path(args.dst) if Path(args.dst).is_absolute() else (dst_root / args.dst)
     build_cc_dataset(src, args.pseudolabels, dst, cfg.channels, cfg.classes)
-    print(f"Built confidence-augmented dataset -> {dst}")
+    print(f"Built probability-augmented dataset -> {dst}")
 
 
 def cmd_make_splits(args):

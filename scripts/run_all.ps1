@@ -61,19 +61,19 @@ foreach ($cls in $Classes) {
     & $Py -m segment.cli ab-window --dataset $SrcDataset --class $cls --out "$Results/ab_window_$cls"      --config $Config
     & $Py -m segment.cli ab-tsp    --dataset $SrcDataset --class $cls --out "$Results/ab_tsp_$cls"         --config $Config
 
-    Write-Host "== 2. Pseudo-labels + foreground probability + confidence ==" -ForegroundColor Cyan
+    Write-Host "== 2. Pseudo-labels + foreground probability/probfg ==" -ForegroundColor Cyan
     $PL = "$env:nnUNet_raw/_pseudolabels_${SrcDataset}_${cls}"
     & $Py -m segment.cli pseudolabel --dataset $SrcDataset --class $cls --model "models/rf_$cls.joblib" --out $PL --config $Config
 
-    Write-Host "== 3. Build confidence-augmented dataset ==" -ForegroundColor Cyan
+    Write-Host "== 3. Build probability-augmented dataset ==" -ForegroundColor Cyan
     & $Py -m segment.cli build-cc --src $SrcDataset --class $cls --pseudolabels $PL --dst $CCDataset --config $Config
 
-    Write-Host "== 4. nnU-Net plan -> patch confidence normalization -> preprocess ==" -ForegroundColor Cyan
+    Write-Host "== 4. nnU-Net plan -> patch probfg normalization -> preprocess ==" -ForegroundColor Cyan
     # fingerprint + planning first (no preprocessing yet)
     nnUNetv2_extract_fingerprint -d $CCId --verify_dataset_integrity
     nnUNetv2_plan_experiment -d $CCId
-    # keep the confidence channel un-normalized BEFORE the cached arrays are written
-    & $Py -c "from segment.fine.dataset import patch_plans_no_norm_confidence as p; import os; p(os.path.join(os.environ['nnUNet_preprocessed'], '$CCDataset'))"
+    # keep the probfg carrier channel un-normalized BEFORE the cached arrays are written
+    & $Py -c "from segment.fine.dataset import patch_plans_no_norm_probfg as p; import os; p(os.path.join(os.environ['nnUNet_preprocessed'], '$CCDataset'))"
     nnUNetv2_preprocess -d $CCId -c 3d_fullres
     & $Py -m segment.cli make-splits --dataset $CCDataset
 

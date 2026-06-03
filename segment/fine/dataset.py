@@ -1,19 +1,20 @@
-"""Build the confidence-augmented nnU-Net dataset for the fine stage.
+"""Build the probability-augmented nnU-Net dataset for the fine stage.
 
 Strategy (robust to nnU-Net version drift): instead of forking nnU-Net's
-dataloader, the per-voxel confidence (soft label) is carried as an **extra input
+dataloader, the per-voxel foreground probability is carried as an **extra image
 channel**. nnU-Net then augments it spatially in lockstep with the image and
-segmentation for free; the custom trainer splits this channel back off before
-the network and feeds it to the confidence-constrained loss.
+segmentation for free; the custom trainer drops this channel before network
+forward and feeds it only to the probability-constrained loss.
 
 One dataset is assembled per independent geology type (e.g.
 ``Dataset0XX_GeologyCC_<type>``), each binary, whose:
 
-* image channels are ``[vp, vs, depth, confidence]`` (confidence = ``conf_<case>``),
+* image channels are ``[vp, vs, depth, probfg]`` (``probfg_<case>``, with
+  legacy ``prob_<case>`` accepted as a fallback),
 * labels are the **binary hard pseudo-labels** (0/1 for this type) produced by
   the coarse stage; ``dataset.json`` labels are ``{background:0, <type>:1}``.
 
-It also patches the generated plans so the confidence channel uses
+It also patches the generated plans so the probfg carrier channel uses
 ``NoNormalization`` (preserving its [0, 1] range) while the physical channels
 keep z-score normalization.
 """
@@ -29,7 +30,7 @@ import numpy as np
 
 from ..io import Geometry, list_cases, read_volume, write_json, write_volume
 
-CONFIDENCE_CHANNEL_NAME = "confidence"
+PROBFG_CHANNEL_NAME = "probfg"
 
 
 def build_cc_dataset(
@@ -40,11 +41,11 @@ def build_cc_dataset(
     classes: Sequence[str],
     file_ending: str = ".nii.gz",
 ) -> None:
-    """Create the 4-channel confidence-augmented dataset.
+    """Create the 4-channel probability-augmented dataset.
 
     ``src_raw_dir``        : existing nnU-Net raw dataset (vp/vs/depth images).
     ``pseudolabel_dir``    : dir holding ``<case>`` hard labels, ``prob_<case>``
-                             foreground probabilities and ``conf_<case>`` hard-label confidence.
+                             foreground probabilities (or ``probfg_<case>``).
     ``dst_raw_dir``        : output dataset dir.
     """
     src_raw_dir = Path(src_raw_dir)
@@ -60,6 +61,7 @@ def build_cc_dataset(
         p.name[: -len(file_ending)]
         for p in pseudolabel_dir.glob(f"*{file_ending}")
         if not p.name.startswith("prob_")
+        and not p.name.startswith("probfg_")
         and not p.name.startswith("conf_")
     )
     src_cases = set(list_cases(src_raw_dir / "imagesTr", file_ending))
@@ -76,30 +78,36 @@ def build_cc_dataset(
             if geom is None:
                 arr, geom = read_volume(src)
                 ref_shape = arr.shape
-        # confidence channel
+        # foreground probability carrier channel used only by the loss
+        hard_path = pseudolabel_dir / f"{case}{file_ending}"
+        probfg_path = pseudolabel_dir / f"probfg_{case}{file_ending}"
+        prob_path = pseudolabel_dir / f"prob_{case}{file_ending}"
         conf_path = pseudolabel_dir / f"conf_{case}{file_ending}"
-        legacy_prob_path = pseudolabel_dir / f"prob_{case}{file_ending}"
-        if conf_path.exists():
+        if probfg_path.exists():
+            probfg, _ = read_volume(probfg_path)
+        elif prob_path.exists():
+            probfg, _ = read_volume(prob_path)
+        elif conf_path.exists() and hard_path.exists():
             conf, _ = read_volume(conf_path)
-        elif legacy_prob_path.exists():
-            # Backward compatibility: older pseudo-label folders stored the
-            # assigned hard-label confidence in prob_<case>.
-            conf, _ = read_volume(legacy_prob_path)
+            hard, _ = read_volume(hard_path)
+            probfg = np.where(hard > 0, conf, 1.0 - conf)
+        elif hard_path.exists():
+            hard, _ = read_volume(hard_path)
+            probfg = (hard > 0).astype(np.float32)
         else:
-            conf = np.ones(ref_shape, dtype=np.float32)
+            probfg = np.full(ref_shape, 0.5, dtype=np.float32)
         write_volume(
-            conf.astype(np.float32),
+            np.clip(probfg.astype(np.float32), 0.0, 1.0),
             geom,
             dst_raw_dir / "imagesTr" / f"{case}_{n_phys:04d}{file_ending}",
             dtype=np.float32,
         )
         # hard pseudo-label
-        hard_path = pseudolabel_dir / f"{case}{file_ending}"
         if hard_path.exists():
             shutil.copy2(hard_path, dst_raw_dir / "labelsTr" / f"{case}{file_ending}")
             n_train += 1
 
-    all_channels = list(channels) + [CONFIDENCE_CHANNEL_NAME]
+    all_channels = list(channels) + [PROBFG_CHANNEL_NAME]
     channel_names = {str(i): name for i, name in enumerate(all_channels)}
     labels = {"background": 0}
     for i, name in enumerate(classes, start=1):
@@ -115,17 +123,17 @@ def build_cc_dataset(
     )
 
 
-def patch_plans_no_norm_confidence(
+def patch_plans_no_norm_probfg(
     preprocessed_dataset_dir: str | Path,
     plans_name: str = "nnUNetPlans",
-    confidence_channel_index: int | None = None,
+    probfg_channel_index: int | None = None,
 ) -> None:
-    """Force the confidence (last) channel to ``NoNormalization`` in the plans.
+    """Force the probfg (last) channel to ``NoNormalization`` in the plans.
 
     In nnU-Net v2 ``normalization_schemes`` lives under each
     ``configurations[<cfg>]``; patch every configuration that has the list.
     NOTE: run this BEFORE preprocessing so the cached ``*.npy`` use the
-    un-normalized confidence channel.
+    un-normalized probfg channel.
     """
     plans_path = Path(preprocessed_dataset_dir) / f"{plans_name}.json"
     with open(plans_path, "r", encoding="utf-8") as fh:
@@ -135,10 +143,23 @@ def patch_plans_no_norm_confidence(
         norm = cfg.get("normalization_schemes")
         if not isinstance(norm, list):
             continue
-        idx = confidence_channel_index if confidence_channel_index is not None else len(norm) - 1
+        idx = probfg_channel_index if probfg_channel_index is not None else len(norm) - 1
         if 0 <= idx < len(norm):
             norm[idx] = "NoNormalization"
             cfg["normalization_schemes"] = norm
             changed = True
     if changed:
         write_json(plans, plans_path)
+
+
+def patch_plans_no_norm_confidence(
+    preprocessed_dataset_dir: str | Path,
+    plans_name: str = "nnUNetPlans",
+    confidence_channel_index: int | None = None,
+) -> None:
+    """Backward-compatible alias for the probfg plan patcher."""
+    patch_plans_no_norm_probfg(
+        preprocessed_dataset_dir,
+        plans_name=plans_name,
+        probfg_channel_index=confidence_channel_index,
+    )

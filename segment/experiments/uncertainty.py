@@ -8,7 +8,8 @@ predictions are confident vs. uncertain.
 
 Inputs are per-method directories of ``<case>.npz`` probability volumes (from
 ``nnUNetv2_predict --save_probabilities``). The pseudo-label column is built
-from the coarse binary foreground probability ``prob_<case>``.
+from the coarse binary foreground probability ``probfg_<case>`` (falling back
+to legacy ``prob_<case>``).
 """
 
 from __future__ import annotations
@@ -27,7 +28,8 @@ from .report import write_table
 
 def _pseudolabel_proba(pseudolabel_dir: Path, case: str, n_classes: int, file_ending: str):
     hard, _ = read_volume(pseudolabel_dir / f"{case}{file_ending}")
-    prob_path = pseudolabel_dir / f"prob_{case}{file_ending}"
+    probfg_path = pseudolabel_dir / f"probfg_{case}{file_ending}"
+    prob_path = probfg_path if probfg_path.exists() else pseudolabel_dir / f"prob_{case}{file_ending}"
     if prob_path.exists() and n_classes == 2:
         fg_prob, _ = read_volume(prob_path)
         fg_prob = np.clip(fg_prob.astype(np.float32), 0.0, 1.0)

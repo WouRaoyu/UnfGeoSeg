@@ -221,7 +221,8 @@ coordinate_system
 
 - `labelsTr/<case>.nii.gz`：真实 dense label，若存在
 - `_pseudolabels_<dataset>/<case>.nii.gz`：RF 生成的 hard pseudo-label
-- `_pseudolabels_<dataset>/prob_<case>.nii.gz`：RF 生成的 confidence
+- `_pseudolabels_<dataset>/probfg_<case>.nii.gz`：RF 生成的 foreground probability，作为 fine-stage soft target
+- `_pseudolabels_<dataset>/conf_<case>.nii.gz`：RF 对 hard pseudo-label 的置信度，兼容/诊断输出
 - `results/pred_*`：fine model 预测结果
 
 待办：
@@ -300,7 +301,7 @@ segment data-check --dataset <dataset> --tfr tfr_records.csv --boreholes borehol
 | held-out TFR face | reference label 轴向切片 | `segment/experiments/validation_records.py` | 否 |
 | 钻孔/探孔轨迹 | reference label 随机 1D 轨迹 | `segment/experiments/validation_records.py` | 否 |
 | hard pseudo-label | RF 全体 voxel 滑窗预测 | `segment/coarse/pseudolabel.py` | 可作为弱监督，不是真实标签 |
-| confidence 通道 | RF 最大类别概率 | `segment/coarse/pseudolabel.py` | 可作为弱监督，不是真实标签 |
+| probfg soft-target 通道 | RF 前景概率 `P(class=1)` | `segment/coarse/pseudolabel.py` | 可作为弱监督，不是真实标签 |
 | TSP 扰动实验 | 人为 `Vp/Vs +/-3/5/10%` | `segment/experiments/ab_tsp_perturbation.py` | 仅为敏感性分析 |
 
 ## 验收标准

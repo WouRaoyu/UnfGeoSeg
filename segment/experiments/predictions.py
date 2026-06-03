@@ -18,7 +18,9 @@ from ..io import read_volume, resolve_label_path
 def list_predicted_cases(pred_dir: str | Path, file_ending: str = ".nii.gz") -> List[str]:
     pred_dir = Path(pred_dir)
     return sorted(p.name[: -len(file_ending)] for p in pred_dir.glob(f"*{file_ending}")
-                  if not p.name.startswith("prob_") and not p.name.startswith("conf_"))
+                  if not p.name.startswith("prob_")
+                  and not p.name.startswith("probfg_")
+                  and not p.name.startswith("conf_"))
 
 
 def load_segmentation(pred_dir: str | Path, case: str, file_ending: str = ".nii.gz") -> np.ndarray:
