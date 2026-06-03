@@ -156,7 +156,7 @@ def cmd_build_cc(args):
 
 
 def cmd_make_splits(args):
-    from .data.splits import leave_one_tunnel_out, default_case_to_tunnel
+    from .data.splits import default_case_to_tunnel, kfold_cases, leave_one_tunnel_out
 
     pre = nnunet_dirs().get("nnUNet_preprocessed")
     dataset_dir = pre / args.dataset if pre else Path(args.dataset)
@@ -165,9 +165,10 @@ def cmd_make_splits(args):
     raw = _resolve_dataset(args.dataset)
     cases = list_cases(raw / "imagesTr", fe)
     mapping = default_case_to_tunnel(cases)
-    if len(set(mapping.values())) < 2:  # single project -> leave-one-volume-out
-        mapping = {c: c for c in cases}
-    folds = leave_one_tunnel_out(mapping)
+    if len(set(mapping.values())) < 2:
+        folds = kfold_cases(cases, n_splits=args.folds)
+    else:
+        folds = leave_one_tunnel_out(mapping)
     out = dataset_dir / "splits_final.json"
     write_json(folds, out)
     print(f"Wrote {len(folds)} folds -> {out}")
@@ -252,6 +253,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("make-splits"); add_common(sp)
     sp.add_argument("--dataset", required=True)
     sp.add_argument("--protocol", default="leave_one_tunnel_out")
+    sp.add_argument("--folds", type=int, default=5)
     sp.set_defaults(func=cmd_make_splits)
 
     for name, fn in (("e1", cmd_e1), ("ab-burial", cmd_ab_burial),

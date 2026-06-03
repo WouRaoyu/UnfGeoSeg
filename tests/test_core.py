@@ -11,7 +11,7 @@ import torch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from segment.data.splits import blocked_chainage_split, leave_one_tunnel_out
+from segment.data.splits import blocked_chainage_split, kfold_cases, leave_one_tunnel_out
 from segment.experiments.eval_metrics import (
     boundary_error_1d,
     classwise_metrics,
@@ -37,6 +37,15 @@ def test_leave_one_tunnel_out():
     assert len(folds) == 2
     assert folds[0]["val"] == ["A_1", "A_2"]
     assert "A_1" not in folds[0]["train"]
+
+
+def test_kfold_cases_balances_single_project_folds():
+    cases = [f"case_{i:03d}" for i in range(137)]
+    folds = kfold_cases(cases, n_splits=5)
+    assert len(folds) == 5
+    assert [len(f["val"]) for f in folds] == [28, 28, 27, 27, 27]
+    assert [len(f["train"]) for f in folds] == [109, 109, 110, 110, 110]
+    assert sorted(c for f in folds for c in f["val"]) == cases
 
 
 def test_classwise_and_boundary_metrics():

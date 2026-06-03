@@ -164,6 +164,10 @@ base Dice+CE objective, then test `UNFAVORSEG_LAMBDA=0.1/0.3` and lower
   `geology_classes` in `dataset.json` to populate the final manuscript numbers.
 * **Deep supervision is disabled** for the TransUNet trainers so the single
   full-resolution output stays aligned with the probfg soft-target map.
+* **Fine-stage folds** — `segment make-splits` uses leave-one-tunnel-out when
+  case ids indicate multiple tunnel/project groups. For a single-project dataset,
+  it writes deterministic 5-fold case-level splits instead of unstable
+  leave-one-volume-out folds. Override the count with `--folds`.
 * **TFR / borehole records** — when real field records are unavailable, the
   fine-stage evaluators synthesize sparse faces / 1-D trajectories from the
   reference labels (`experiments/validation_records.py`) so the pipeline is

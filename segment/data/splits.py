@@ -7,6 +7,8 @@ protocols are provided:
 
 * ``leave_one_tunnel_out`` -- case/volume-level folds for the nnU-Net (fine)
   stage; each fold holds out all volumes of one tunnel project.
+* ``kfold_cases`` -- case/volume-level folds for single-project datasets where
+  leave-one-tunnel-out would otherwise degenerate to one validation volume.
 * ``blocked_chainage_split`` -- record-level split along the axial (chainage)
   axis into train/test blocks separated by a buffer gap no smaller than the
   axial half-window, used by the coarse Random-Forest stage.
@@ -33,6 +35,29 @@ def leave_one_tunnel_out(case_to_tunnel: Dict[str, str]) -> List[Dict[str, List[
     for held in tunnels:
         val = sorted(c for c, t in case_to_tunnel.items() if t == held)
         train = sorted(c for c, t in case_to_tunnel.items() if t != held)
+        folds.append({"train": train, "val": val})
+    return folds
+
+
+def kfold_cases(case_ids: Sequence[str], n_splits: int = 5) -> List[Dict[str, List[str]]]:
+    """Produce deterministic case-level nnU-Net folds for one project.
+
+    Cases are sorted and split into contiguous, size-balanced validation blocks.
+    This keeps neighboring case ids together when they encode acquisition order
+    while avoiding the unstable one-volume validation folds.
+    """
+    cases = sorted(case_ids)
+    if len(cases) < 2:
+        raise ValueError("Need at least two cases to create train/val folds")
+    n_splits = min(int(n_splits), len(cases))
+    if n_splits < 2:
+        raise ValueError("n_splits must be at least 2")
+
+    folds: List[Dict[str, List[str]]] = []
+    for val_arr in np.array_split(np.asarray(cases, dtype=object), n_splits):
+        val = [str(c) for c in val_arr.tolist()]
+        val_set = set(val)
+        train = [c for c in cases if c not in val_set]
         folds.append({"train": train, "val": val})
     return folds
 
