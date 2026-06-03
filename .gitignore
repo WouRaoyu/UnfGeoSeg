@@ -1,8 +1,12 @@
 results/
 models/
+build/
 
 # Python cache files
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Ai cache files
 .codex*/
+.claude/
