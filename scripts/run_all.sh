@@ -20,6 +20,7 @@ CC_BASE="Dataset011_HardnessCC"
 CC_ID_BASE=11
 CONFIG="configs/geology.yaml"
 FOLD=0
+FOLDS=5
 EPOCHS=100
 LR=0.0
 LAMBDA_SWEEP=0
@@ -51,6 +52,7 @@ usage() {
         "  --cc-id-base, -CCIdBase VALUE      First nnU-Net dataset id for generated datasets" \
         "  --config, -Config VALUE            YAML config path" \
         "  --fold, -Fold VALUE                nnU-Net fold" \
+        "  --folds VALUE                      Number of case-level CV folds, default 5" \
         "  --epochs, -Epochs VALUE            Training epochs" \
         "  --lr, -LR VALUE                    Optional learning rate override" \
         "  --lambda-sweep, -LambdaSweep       Run lambda sweep" \
@@ -141,6 +143,11 @@ while [[ $# -gt 0 ]]; do
             FOLD="$2"
             shift 2
             ;;
+        --folds)
+            require_value "$1" "${2:-}"
+            FOLDS="$2"
+            shift 2
+            ;;
         --epochs|-Epochs)
             require_value "$1" "${2:-}"
             EPOCHS="$2"
@@ -174,9 +181,11 @@ command -v "$PY" >/dev/null 2>&1 || die "Python executable '$PY' was not found"
 require_env nnUNet_raw
 require_env nnUNet_preprocessed
 require_env nnUNet_results
+[[ "$FOLDS" =~ ^[0-9]+$ && "$FOLDS" -ge 2 ]] || die "--folds must be an integer >= 2"
 
 mkdir -p results models
 RESULTS="results"
+export PYTHONPATH="$(pwd)${PYTHONPATH:+:${PYTHONPATH}}"
 
 echo "${CYAN}== 0. Register custom trainers ==${RESET}"
 "$PY" -m segment.cli install-trainers
@@ -208,7 +217,7 @@ for cls in "${CLASSES[@]}"; do
     nnUNetv2_plan_experiment -d "$cc_id"
     CC_DATASET="$cc_dataset" "$PY" -c 'from segment.fine.dataset import patch_plans_no_norm_probfg as p; import os; p(os.path.join(os.environ["nnUNet_preprocessed"], os.environ["CC_DATASET"]))'
     nnUNetv2_preprocess -d "$cc_id" -c 3d_fullres
-    "$PY" -m segment.cli make-splits --dataset "$cc_dataset"
+    "$PY" -m segment.cli make-splits --dataset "$cc_dataset" --protocol kfold --folds "$FOLDS"
 
     echo "${CYAN}== 5. Train: proposed (CC), plain TransUNet, nnU-Net baseline ==${RESET}"
     export UNFAVORSEG_LAMBDA="0.3"

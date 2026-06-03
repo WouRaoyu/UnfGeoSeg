@@ -165,7 +165,11 @@ def cmd_make_splits(args):
     raw = _resolve_dataset(args.dataset)
     cases = list_cases(raw / "imagesTr", fe)
     mapping = default_case_to_tunnel(cases)
-    if len(set(mapping.values())) < 2:
+    if args.protocol == "kfold":
+        folds = kfold_cases(cases, n_splits=args.folds)
+    elif args.protocol == "leave_one_tunnel_out":
+        folds = leave_one_tunnel_out(mapping)
+    elif len(set(mapping.values())) < 2:
         folds = kfold_cases(cases, n_splits=args.folds)
     else:
         folds = leave_one_tunnel_out(mapping)
@@ -254,7 +258,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("make-splits"); add_common(sp)
     sp.add_argument("--dataset", required=True)
-    sp.add_argument("--protocol", default="leave_one_tunnel_out")
+    sp.add_argument("--protocol", choices=("auto", "kfold", "leave_one_tunnel_out"),
+                    default="auto")
     sp.add_argument("--folds", type=int, default=5)
     sp.set_defaults(func=cmd_make_splits)
 

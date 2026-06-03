@@ -31,6 +31,7 @@ CC_BASE="Dataset011_HardnessCC"
 CC_ID_BASE=11
 FOLD=0
 FOLDS=5
+SPLIT_PROTOCOL="kfold"
 EPOCHS=100
 LR=0.0
 LAMBDA=0.3
@@ -87,6 +88,7 @@ usage() {
         "Fine-stage options:" \
         "  --fold VALUE                     nnU-Net fold, default 0" \
         "  --folds VALUE                    Number of single-project CV folds, default 5" \
+        "  --split-protocol VALUE           kfold, auto, or leave_one_tunnel_out; default kfold" \
         "  --epochs VALUE                   UNFAVORSEG_EPOCHS, default 100" \
         "  --lr VALUE                       Optional UNFAVORSEG_LR; 0 disables override" \
         "  --lambda VALUE                   UNFAVORSEG_LAMBDA, default 0.3" \
@@ -244,6 +246,11 @@ while [[ $# -gt 0 ]]; do
             FOLDS="$2"
             shift 2
             ;;
+        --split-protocol)
+            require_value "$1" "${2:-}"
+            SPLIT_PROTOCOL="$2"
+            shift 2
+            ;;
         --epochs)
             require_value "$1" "${2:-}"
             EPOCHS="$2"
@@ -308,6 +315,10 @@ fi
 [[ "$CC_ID_BASE" =~ ^[0-9]+$ ]] || die "--cc-id-base must be a non-negative integer"
 [[ "$FOLD" =~ ^[0-9]+$ ]] || die "--fold must be a non-negative integer"
 [[ "$FOLDS" =~ ^[0-9]+$ && "$FOLDS" -ge 2 ]] || die "--folds must be an integer >= 2"
+case "$SPLIT_PROTOCOL" in
+    auto|kfold|leave_one_tunnel_out) ;;
+    *) die "--split-protocol must be one of: auto, kfold, leave_one_tunnel_out" ;;
+esac
 [[ "$WIDTH" =~ ^[0-9]+$ ]] || die "--width must be a non-negative integer"
 [[ "$EXPORT_START_INDEX" =~ ^[0-9]+$ ]] || die "--export-start-index must be a non-negative integer"
 validate_non_negative_number "--lr" "$LR"
@@ -383,7 +394,7 @@ for type_name in "${CLASSES[@]}"; do
         nnUNetv2_plan_experiment -d "$cc_id"
         CC_DATASET="$cc_dataset" "$PY" -c 'from segment.fine.dataset import patch_plans_no_norm_probfg as p; import os; p(os.path.join(os.environ["nnUNet_preprocessed"], os.environ["CC_DATASET"]))'
         nnUNetv2_preprocess -d "$cc_id" -c "$CONFIGURATION"
-        "$PY" -m segment.cli make-splits --dataset "$cc_dataset" --folds "$FOLDS"
+        "$PY" -m segment.cli make-splits --dataset "$cc_dataset" --protocol "$SPLIT_PROTOCOL" --folds "$FOLDS"
     else
         echo "${YELLOW}== 2. Preprocess skipped ==${RESET}"
     fi
