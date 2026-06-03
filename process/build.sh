@@ -24,12 +24,8 @@ CMAKE_ARGS=(
     -B "${BUILD_DIR}"
     -G "${GENERATOR}"
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
+    -DCMAKE_PREFIX_PATH="${CONDA_PREFIX}"
 )
-
-# Forward extra search prefixes for the remaining packages.
-if [[ -n "${CMAKE_PREFIX_PATH:-}" ]]; then
-    CMAKE_ARGS+=(-DCMAKE_PREFIX_PATH="${CONDA_PREFIX}")
-fi
 
 echo "[build.sh] Configuring with generator '${GENERATOR}' -> ${BUILD_DIR}" by "${CMAKE_ARGS[@]}"
 cmake "${CMAKE_ARGS[@]}"
