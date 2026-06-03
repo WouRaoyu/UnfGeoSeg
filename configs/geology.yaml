@@ -1,0 +1,87 @@
+# UnfavorSeg configuration.
+# Reproduces the coarse->fine weakly-supervised pipeline described in Manuscript.docx.
+
+# ---------------------------------------------------------------------------
+# Channels (must match the nnU-Net dataset.json channel_names ordering).
+# ---------------------------------------------------------------------------
+channels:
+  - vp      # _0000 P-wave velocity
+  - vs      # _0001 S-wave velocity
+  - depth   # _0002 burial depth distance field
+
+# ---------------------------------------------------------------------------
+# Geology classes (the three unfavorable-geology types in the manuscript).
+# Each type is an INDEPENDENT 0/1 binary target: types may spatially overlap
+# (a voxel can belong to several types), so they are NOT combined into a single
+# mutually-exclusive label map. Instead each type is supplied as a per-class
+# binary mask `labelsTr/<case>_<type>.nii.gz` and the whole coarse->fine
+# pipeline is run once per type (select it with `--class <type>`).
+# For the on-disk binary smoke-test dataset (Dataset005_Hardness) set
+# `classes: [unfavorable]` (its single `labelsTr/<case>.nii.gz` is used directly).
+# ---------------------------------------------------------------------------
+classes:
+  - fracture_zone
+  - soft_rock
+  - water_rich_zone
+
+# ---------------------------------------------------------------------------
+# Local statistical sampling window (Eq. 2-4). Half-extents in voxels:
+# W = {(x,y,z): |x-xi|<=dx, |y-yi|<=dy, |z-zi|<=dz}. `axis_order` names the
+# array axes of the loaded volume (SimpleITK -> numpy is z,y,x by default).
+# `index 8` optimum from the manuscript window sweep maps to this default.
+# ---------------------------------------------------------------------------
+sampling:
+  half_window: [4, 4, 4]        # [dz, dy, dx] voxels (transverse, transverse, axial)
+  axial_axis: 0                 # which array axis is the tunnel-advance (chainage) direction
+  statistics: [mean, median, mode, max, min]
+  mode_decimals: 2              # rounding precision used to define the mode of continuous values
+
+# ---------------------------------------------------------------------------
+# Coarse-grained classifier.
+# ---------------------------------------------------------------------------
+coarse:
+  model: random_forest
+  random_forest:
+    n_estimators: 200
+    max_depth: 15
+    n_jobs: -1
+    random_state: 42
+  # baselines used only by the classifier-comparison ablation
+  baselines: [logistic_regression, svm, naive_bayes]
+
+# ---------------------------------------------------------------------------
+# Fine-grained 3D-TransUNet + confidence-constrained loss (Eq. 5-6).
+# ---------------------------------------------------------------------------
+fine:
+  trainer: nnUNetTrainerTransUNetCC
+  configuration: 3d_fullres
+  epochs: 100                   # sufficient for fine-stage training
+  lambda_kl: 0.3                # trade-off coefficient for the KL confidence term
+  lambda_sweep: [0.0, 0.1, 0.3, 0.5, 1.0]
+
+# ---------------------------------------------------------------------------
+# Leakage-controlled validation design.
+# ---------------------------------------------------------------------------
+validation:
+  protocol: leave_one_tunnel_out   # or: blocked_chainage
+  blocked_chainage:
+    block_length: 40               # voxels along the axial axis per block
+    buffer: 8                      # >= axial half-window; gap between train/test blocks
+  tolerance_sections: 1            # +/- k sections tolerance for held-out TFR matching
+
+# ---------------------------------------------------------------------------
+# Robustness / perturbation analysis.
+# ---------------------------------------------------------------------------
+perturbation:
+  velocity_levels: [0.03, 0.05, 0.10]   # Vp/Vs +/- fractions
+  smoothing_sigma: 1.0                  # boundary-attenuation (Gaussian) test
+
+# ---------------------------------------------------------------------------
+# Paths. nnU-Net base dirs come from environment variables
+# (nnUNet_raw / nnUNet_preprocessed / nnUNet_results); override here if needed.
+# ---------------------------------------------------------------------------
+paths:
+  results_dir: results
+  # Datasets
+  smoke_dataset: Dataset005_Hardness
+  geology_dataset: Dataset010_Geology

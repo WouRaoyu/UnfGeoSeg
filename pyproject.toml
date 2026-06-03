@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "segment"
+version = "0.1.0"
+description = "Weakly-supervised coarse-to-fine 3D semantic segmentation of unfavorable tunnel geology (nnU-Net + 3D-TransUNet)."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "UnfavorSeg" }]
+dependencies = [
+    "numpy",
+    "scipy",
+    "pandas",
+    "scikit-learn==1.6.0",
+    "SimpleITK",
+    "nibabel",
+    "pyyaml",
+    "tqdm",
+    "matplotlib",
+    "einops",
+]
+
+[project.scripts]
+segment = "segment.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["segment*"]
+exclude = ["tests*"]

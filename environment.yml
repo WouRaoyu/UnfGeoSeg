@@ -1,0 +1,38 @@
+# Dedicated conda environment for UnfavorSeg.
+#
+# In this workspace the env was created by cloning the existing Anaconda base
+# (which already ships torch 2.1.2+cu121, verified working on the local RTX
+# 3060), then pip-installing nnU-Net + deps. To recreate from scratch elsewhere:
+#
+#   conda env create -f environment.yml
+#   conda activate segment
+#   pip install --prefer-binary nnunetv2==2.5.2 blosc2 einops
+#   pip install -e .
+#   segment install-trainers
+#
+# nnU-Net base directories must be set in the environment, e.g. (PowerShell):
+#   $env:nnUNet_raw          = "D:\Datasets\Volumes\nnUNet_raw"
+#   $env:nnUNet_preprocessed = "D:\Datasets\Volumes\nnUNet_preprocessed"
+#   $env:nnUNet_results      = "D:\Datasets\Volumes\nnUNet_results"
+#
+name: segment
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - torch --index-url https://download.pytorch.org/whl/cu121
+      - nnunetv2==2.5.2
+      - blosc2
+      - scikit-learn==1.6.0
+      - SimpleITK
+      - nibabel
+      - scipy
+      - pandas
+      - pyyaml
+      - tqdm
+      - matplotlib
+      - einops
