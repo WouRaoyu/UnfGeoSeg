@@ -505,6 +505,14 @@ private:
 
 } // namespace
 
+static void resetGridValuesAndBackground(openvdb::FloatGrid::Ptr grid, float value)
+{
+    openvdb::tools::changeBackground(grid->tree(), value);
+    for (auto it = grid->beginValueOn(); it; ++it) {
+        it.setValue(value);
+    }
+}
+
 py::array_t<float> fetchStatFromVolume(const openvdb::GridPtrVec& vec,
     openvdb::Vec3I boxSize,
     const std::string& featureMode,
@@ -593,9 +601,11 @@ openvdb::GridPtrVec assignForVolumePetT(const py::list& out,
         const size_t numClasses = static_cast<size_t>(ary.shape(1));
 
         auto probGrid = org->deepCopy();
+        resetGridValuesAndBackground(probGrid, 0.f);
         LeafManager<openvdb::FloatTree> probm(probGrid->tree());
 
         auto typeGrid = org->deepCopy();
+        resetGridValuesAndBackground(typeGrid, 0.f);
         LeafManager<openvdb::FloatTree> typem(typeGrid->tree());
 
         VolumePetTAssigner assigner(probm, typem, buf, numClasses, indexMap);
@@ -1096,10 +1106,13 @@ openvdb::FloatGrid::Ptr filterProcess(openvdb::GridBase::ConstPtr input, float r
     return cpyGrid;
 }
 
-// Serialise one OpenVDB grid to a NIfTI file. `vtkType` is VTK_FLOAT for the
-// probability channel and VTK_INT for label / feature channels.
+// Serialise one OpenVDB grid to a NIfTI file. `vtkType` is VTK_FLOAT for image
+// channels and VTK_INT for labels. Binary labels and probability maps are
+// sanitised during export so stale VDB backgrounds cannot leak physical values
+// (for example vp=4115) into nnU-Net labels or the probfg channel.
 bool formatParse(openvdb::GridBase::ConstPtr grid, const fs::path& pth,
-    float ratio, int width, int vtkType)
+    float ratio, int width, int vtkType, bool binaryLabel = false,
+    bool probabilityMap = false)
 {
     std::cout << "Saveto " << pth.string();
 
@@ -1143,7 +1156,11 @@ bool formatParse(openvdb::GridBase::ConstPtr grid, const fs::path& pth,
             for (int y = 0; y < dims[1]; y++) {
                 for (int x = 0; x < dims[0]; x++) {
                     float* pixel = static_cast<float*>(imageData->GetScalarPointer(x, y, z));
-                    pixel[0] = acc.getValue(start + openvdb::Coord(x, y, z));
+                    float value = acc.getValue(start + openvdb::Coord(x, y, z));
+                    if (probabilityMap && (!std::isfinite(value) || value < 0.f || value > 1.f)) {
+                        value = 0.f;
+                    }
+                    pixel[0] = value;
                 }
             }
         }
@@ -1159,7 +1176,13 @@ bool formatParse(openvdb::GridBase::ConstPtr grid, const fs::path& pth,
             for (int y = 0; y < dims[1]; y++) {
                 for (int x = 0; x < dims[0]; x++) {
                     int* pixel = static_cast<int*>(imageData->GetScalarPointer(x, y, z));
-                    pixel[0] = static_cast<int>(acc.getValue(start + openvdb::Coord(x, y, z)));
+                    float value = acc.getValue(start + openvdb::Coord(x, y, z));
+                    if (binaryLabel) {
+                        pixel[0] = (value >= 0.5f && value < 1.5f) ? 1 : 0;
+                    }
+                    else {
+                        pixel[0] = static_cast<int>(value);
+                    }
                 }
             }
         }
@@ -1233,9 +1256,9 @@ static bool exportItem(const fs::path& resultVdb, const fs::path& inputVdb,
 
     bool ok = true;
     ok &= formatParse(maybeClip(typeGrid, clip, extent),
-        labelsDir / (caseId + ".nii.gz"), ratio, width, VTK_INT);
+        labelsDir / (caseId + ".nii.gz"), ratio, width, VTK_INT, true);
     ok &= formatParse(maybeClip(probGrid, clip, extent),
-        probsDir / (caseId + ".nii.gz"), ratio, width, VTK_FLOAT);
+        probsDir / (caseId + ".nii.gz"), ratio, width, VTK_FLOAT, false, true);
 
     auto dataGrids = loadGrids(inputVdb);
     if (!dataGrids) {
@@ -1256,7 +1279,7 @@ static bool exportItem(const fs::path& resultVdb, const fs::path& inputVdb,
 
     // Existing infer results store this selected type's foreground probability.
     ok &= formatParse(maybeClip(probGrid, clip, extent),
-        imagesDir / (caseId + "_0003.nii.gz"), ratio, width, VTK_FLOAT);
+        imagesDir / (caseId + "_0003.nii.gz"), ratio, width, VTK_FLOAT, false, true);
 
     return ok;
 }
@@ -1271,6 +1294,7 @@ struct ExportOptions
     bool ratioFilter = false;
     float minr = 0.0f;
     float maxr = 1.0f;
+    int startIndex = 0;
     bool clip = false;
     openvdb::Vec3i extent{ 0, 0, 0 };
 };
@@ -1291,6 +1315,7 @@ static bool parseExportArgs(int argc, char** argv, ExportOptions& opt)
         else if (a == "--ratio-filter") opt.ratioFilter = true;
         else if (a == "--minr") { opt.minr = std::stof(next("--minr")); opt.ratioFilter = true; }
         else if (a == "--maxr") { opt.maxr = std::stof(next("--maxr")); opt.ratioFilter = true; }
+        else if (a == "--start-index") opt.startIndex = std::stoi(next("--start-index"));
         else if (a == "--extent") {
             std::vector<int> v; std::string cur;
             std::string s = next("--extent");
@@ -1301,6 +1326,7 @@ static bool parseExportArgs(int argc, char** argv, ExportOptions& opt)
         else std::cerr << "Unknown option ignored: " << a << "\n";
     }
     if (opt.width < 0) throw std::runtime_error("--width must be >= 0");
+    if (opt.startIndex < 0) throw std::runtime_error("--start-index must be >= 0");
     if (opt.minr > opt.maxr) throw std::runtime_error("--minr must be <= --maxr");
     return !opt.dataset.empty() && !opt.outDir.empty();
 }
@@ -1364,6 +1390,19 @@ static std::string caseIdFor(const nlohmann::json& item)
         + std::to_string(item.value("iid", 0));
 }
 
+static bool shouldSkipBeforeStartIndex(const std::string& caseId, int startIndex)
+{
+    if (startIndex <= 0) return false;
+    try {
+        size_t pos = 0;
+        int idx = std::stoi(caseId, &pos);
+        return pos == caseId.size() && idx < startIndex;
+    }
+    catch (...) {
+        return false;
+    }
+}
+
 static int run(const ExportOptions& opt)
 {
     openvdb::initialize();
@@ -1402,14 +1441,19 @@ static int run(const ExportOptions& opt)
             ratio = item["status"][sIdx].get<float>();
         }
 
+        const std::string caseId = caseIdFor(item);
+
+        if (shouldSkipBeforeStartIndex(caseId, opt.startIndex)) {
+            ++skipped;
+            continue;
+        }
+
         // Optional training-sample filtering by informative positive ratios;
         // held-out validation samples are always exported.
         if (opt.ratioFilter && !isTest && !(ratio > opt.minr && ratio < opt.maxr)) {
             ++skipped;
             continue;
         }
-
-        const std::string caseId = caseIdFor(item);
 
         std::cout << "Exporting case " << caseId << " [" << className
             << " from " << typeName << "] "
@@ -1438,7 +1482,7 @@ static void usage(const char* prog)
     std::cerr << "Usage: " << prog << " export"
         << " --dataset <dataset.json> --out <dir> --type <name|idx>"
            " [--class-name <nnunet_label>] [--width 0]"
-           " [--ratio-filter --minr 0.3 --maxr 0.7]"
+           " [--start-index 0] [--ratio-filter --minr 0.3 --maxr 0.7]"
            " [--extent x,y,z]\n";
 }
 

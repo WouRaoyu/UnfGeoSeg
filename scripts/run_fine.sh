@@ -41,6 +41,7 @@ RATIO_FILTER=0
 MINR=0.0
 MAXR=1.0
 EXTENT=""
+EXPORT_START_INDEX=0
 SKIP_EXPORT=0
 SKIP_PREPROCESS=0
 SKIP_TRAIN=0
@@ -80,6 +81,7 @@ usage() {
         "  --minr VALUE                     Ratio-filter min, default 0.0" \
         "  --maxr VALUE                     Ratio-filter max, default 1.0" \
         "  --extent X,Y,Z                   Optional export crop extent" \
+        "  --export-start-index VALUE       Skip export cases with numeric id below VALUE" \
         "" \
         "Fine-stage options:" \
         "  --fold VALUE                     nnU-Net fold, default 0" \
@@ -225,6 +227,11 @@ while [[ $# -gt 0 ]]; do
             EXTENT="$2"
             shift 2
             ;;
+        --export-start-index|--start-index)
+            require_value "$1" "${2:-}"
+            EXPORT_START_INDEX="$2"
+            shift 2
+            ;;
         --fold)
             require_value "$1" "${2:-}"
             FOLD="$2"
@@ -294,6 +301,7 @@ fi
 [[ "$CC_ID_BASE" =~ ^[0-9]+$ ]] || die "--cc-id-base must be a non-negative integer"
 [[ "$FOLD" =~ ^[0-9]+$ ]] || die "--fold must be a non-negative integer"
 [[ "$WIDTH" =~ ^[0-9]+$ ]] || die "--width must be a non-negative integer"
+[[ "$EXPORT_START_INDEX" =~ ^[0-9]+$ ]] || die "--export-start-index must be a non-negative integer"
 validate_non_negative_number "--lr" "$LR"
 validate_non_negative_number "--lambda" "$LAMBDA"
 validate_non_negative_number "--minr" "$MINR"
@@ -343,6 +351,7 @@ for type_name in "${CLASSES[@]}"; do
             --type "$type_name"
             --class-name "$class_name"
             --width "$WIDTH"
+            --start-index "$EXPORT_START_INDEX"
         )
         if [[ "$RATIO_FILTER" -eq 1 ]]; then
             export_args+=(--ratio-filter --minr "$MINR" --maxr "$MAXR")
