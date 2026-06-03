@@ -663,6 +663,7 @@ struct InferOptions
     fs::path datasetOut;                 ///< dataset.json path (default: input-dir/dataset.json)
     int depth = 4;                       ///< window box size along the tunnel axis (voxels)
     int size = 32;                       ///< window box size on the cross-section (voxels)
+    int startIndex = 0;                  ///< skip input_xxxx.vdb volumes whose index < this
     std::string featureMode = "directional_multiscale";
     std::vector<std::string> classes = { "fragment", "hardness", "watery" };
     std::set<std::string> heldOut;       ///< case ids reserved for validation
@@ -691,6 +692,7 @@ static bool parseInferArgs(int argc, char** argv, InferOptions& opt)
         else if (a == "--dataset-out") opt.datasetOut = next("--dataset-out");
         else if (a == "--depth") opt.depth = std::stoi(next("--depth"));
         else if (a == "--size") opt.size = std::stoi(next("--size"));
+        else if (a == "--start-index") opt.startIndex = std::stoi(next("--start-index"));
         else if (a == "--feature-mode") opt.featureMode = next("--feature-mode");
         else if (a == "--classes") opt.classes = splitList(next("--classes"));
         else if (a == "--held-out") { for (auto& s : splitList(next("--held-out"))) opt.heldOut.insert(s); }
@@ -950,6 +952,15 @@ static int run(const InferOptions& opt)
         // input_<case>.vdb -> case id is everything between "input_" and ".vdb"
         const std::string caseId = fpath.stem().string().substr(6);
 
+        // Resume support: skip volumes whose 4-digit index is below --start-index.
+        if (opt.startIndex > 0) {
+            int idx = -1;
+            try { idx = std::stoi(caseId); } catch (...) {}
+            if (idx >= 0 && idx < opt.startIndex) {
+                continue;
+            }
+        }
+
         ++volumeIndex;
         auto itemStart = std::chrono::steady_clock::now();
         std::cout << "[" << volumeIndex << "/" << inputs.size() << "] Processing "
@@ -1022,7 +1033,7 @@ static void usage(const char* prog)
         << " --input-dir <dir> --model <pkl> [--pyhome <dir>] [--scripts <dir>]\n"
            "          [--depth 4] [--size 32] [--classes fragment,hardness,watery]\n"
            "          [--feature-mode directional_multiscale|baseline]\n"
-           "          [--held-out caseA,caseB] [--dataset-out <json>]\n";
+           "          [--start-index 0] [--held-out caseA,caseB] [--dataset-out <json>]\n";
 }
 
 } // namespace infer

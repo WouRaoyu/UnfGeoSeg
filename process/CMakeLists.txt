@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.18)
 
 project(dt_pipeline LANGUAGES CXX)
 
+if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 OLD)
+endif()
+
 # ---------------------------------------------------------------------------
 # Standalone build for the merged infer + export tool. Has no dependency on
 # the DTGeoStudio source tree; it only needs the third-party libraries below.
@@ -22,16 +26,18 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # OpenVDB ships its own FindOpenVDB.cmake
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_PREFIX_PATH}/lib/cmake/OpenVDB")
 
+# Let VTK import conda's complete TBB target set before OpenVDB's finder can
+# create a smaller partial set. Some conda TBB packages are not re-entrant.
+find_package(VTK REQUIRED COMPONENTS CommonCore CommonDataModel IOImage)
 find_package(OpenVDB REQUIRED COMPONENTS openvdb)
-find_package(TBB REQUIRED)
+if(NOT TARGET TBB::tbb)
+    find_package(TBB REQUIRED)
+endif()
 find_package(nlohmann_json REQUIRED)
 
 # Embedded Python interpreter for running the trained model (model_utils.py).
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
 find_package(pybind11 REQUIRED)
-
-# VTK NIFTI writer lives in the IOImage module.
-find_package(VTK REQUIRED COMPONENTS CommonCore CommonDataModel IOImage)
 
 # ---- Target ---------------------------------------------------------------
 add_executable(dt_pipeline dt_pipeline.cpp)
