@@ -31,7 +31,7 @@ if [[ -n "${CMAKE_PREFIX_PATH:-}" ]]; then
     CMAKE_ARGS+=(-DCMAKE_PREFIX_PATH="${CONDA_PREFIX}")
 fi
 
-echo "[build.sh] Configuring with generator '${GENERATOR}' -> ${BUILD_DIR}"
+echo "[build.sh] Configuring with generator '${GENERATOR}' -> ${BUILD_DIR}" by "${CMAKE_ARGS[@]}"
 cmake "${CMAKE_ARGS[@]}"
 
 echo "[build.sh] Building"
