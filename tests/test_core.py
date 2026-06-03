@@ -18,6 +18,7 @@ from segment.experiments.eval_metrics import (
     reliability_metrics,
 )
 from segment.fine.loss import ConfidenceConstrainedLoss
+from segment.fine.trainer import _DropProbfgChannel
 from segment.fine.transunet_wrapper import build_transunet
 
 
@@ -63,6 +64,18 @@ def test_confidence_loss_reduces_to_base_at_lambda0():
     probfg = torch.rand(1, 1, 16, 16, 16)
     l0 = ConfidenceConstrainedLoss(2, lambda_kl=0.0)
     assert abs(float(l0(y, target, probfg)) - float(l0.base_loss(y, target))) < 1e-6
+
+
+def test_drop_probfg_channel_exposes_wrapped_decoder():
+    ak = {"features_per_stage": [8, 16], "strides": [[1, 1, 1], [2, 2, 2]]}
+    net = build_transunet(3, 2, ak)
+    wrapped = _DropProbfgChannel(net, image_channels=3)
+    assert wrapped.decoder is net.decoder
+    wrapped.decoder.deep_supervision = False
+
+    x = torch.randn(1, 4, 16, 16, 16)
+    y = wrapped(x)
+    assert y.shape == (1, 2, 16, 16, 16)
 
 
 def test_soft_target_uses_foreground_probability():

@@ -78,6 +78,11 @@ class _DropProbfgChannel(nn.Module):
         self.net = net
         self.image_channels = image_channels
 
+    @property
+    def decoder(self):
+        """Expose the wrapped decoder for nnU-Net deep-supervision toggles."""
+        return self.net.decoder
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x[:, : self.image_channels])
 
