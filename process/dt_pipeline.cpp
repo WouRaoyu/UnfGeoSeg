@@ -326,6 +326,8 @@ static void appendFeatureRow(const std::array<FloatConstAccessor, 3>& accs,
     }
 }
 
+namespace {
+
 // Parallel feature extraction: each leaf owns a disjoint row range (via
 // `indexMap`), so leaves are processed concurrently without synchronisation.
 class FeatureExtractor
@@ -498,6 +500,8 @@ private:
     const openvdb::Index64 mVoxelsPerLeaf;
     std::shared_ptr<size_t> mTrueNumbers;
 };
+
+} // namespace
 
 py::array_t<float> fetchStatFromVolume(const openvdb::GridPtrVec& vec,
     openvdb::Vec3I boxSize,

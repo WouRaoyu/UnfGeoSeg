@@ -25,6 +25,7 @@ CMAKE_ARGS=(
     -G "${GENERATOR}"
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
     -DCMAKE_PREFIX_PATH="${CONDA_PREFIX}"
+    -Wno-dev
 )
 
 echo "[build.sh] Configuring with generator '${GENERATOR}' -> ${BUILD_DIR}" by "${CMAKE_ARGS[@]}"
