@@ -6,11 +6,6 @@
 # Usage:
 #   ./build.sh [build-dir]
 #
-# Useful environment variables / cmake hints (pass as -D... after editing or
-# export before running):
-#   OPENVDB_ROOT   install prefix of OpenVDB (if not on the default search path)
-#   CMAKE_PREFIX_PATH  ':'-separated prefixes for VTK / pybind11 / TBB / json
-#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,14 +26,9 @@ CMAKE_ARGS=(
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
 )
 
-# Forward an OpenVDB install prefix if the caller provided one.
-if [[ -n "${OPENVDB_ROOT:-}" ]]; then
-    CMAKE_ARGS+=(-DOPENVDB_ROOT="${OPENVDB_ROOT}")
-fi
-
 # Forward extra search prefixes for the remaining packages.
 if [[ -n "${CMAKE_PREFIX_PATH:-}" ]]; then
-    CMAKE_ARGS+=(-DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH}")
+    CMAKE_ARGS+=(-DCMAKE_PREFIX_PATH="${CONDA_PREFIX}")
 fi
 
 echo "[build.sh] Configuring with generator '${GENERATOR}' -> ${BUILD_DIR}"

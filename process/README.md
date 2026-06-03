@@ -25,15 +25,11 @@ given by `--input-dir`, and `result_*.vdb` are written back into the same folder
 ## Build (Linux, Ninja preferred)
 
 ```bash
-cd run
-./build.sh                 # configures + builds into ./build
-# or point at custom prefixes:
-OPENVDB_ROOT=/opt/openvdb \
-CMAKE_PREFIX_PATH=/opt/vtk:/opt/pybind11 \
-  ./build.sh
+cd process
+./build.sh # configures + builds into ./build
 ```
 
-The executable lands at `run/build/dt_pipeline`, with `model_utils.py` copied
+The executable lands at `process/build/dt_pipeline`, with `model_utils.py` copied
 alongside it.
 
 ## Usage

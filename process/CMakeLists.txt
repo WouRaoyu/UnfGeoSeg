@@ -19,11 +19,8 @@ endif()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # ---- Dependencies ---------------------------------------------------------
-# OpenVDB ships its own FindOpenVDB.cmake; add the usual install location to
-# the module path if OPENVDB_ROOT is supplied.
-if(DEFINED OPENVDB_ROOT)
-    list(APPEND CMAKE_MODULE_PATH "${OPENVDB_ROOT}/lib/cmake/OpenVDB")
-endif()
+# OpenVDB ships its own FindOpenVDB.cmake
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_PREFIX_PATH}/lib/cmake/OpenVDB")
 
 find_package(OpenVDB REQUIRED COMPONENTS openvdb)
 find_package(TBB REQUIRED)
