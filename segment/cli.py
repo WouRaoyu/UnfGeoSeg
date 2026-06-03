@@ -172,6 +172,8 @@ def cmd_make_splits(args):
     out = dataset_dir / "splits_final.json"
     write_json(folds, out)
     print(f"Wrote {len(folds)} folds -> {out}")
+    for i, fold in enumerate(folds):
+        print(f"  fold {i}: train={len(fold['train'])}, val={len(fold['val'])}")
 
 
 def _coarse_experiment(args, module, **kwargs):
