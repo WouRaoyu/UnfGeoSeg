@@ -1,101 +1,270 @@
-# dt_pipeline — standalone infer + export tool
+# dt_pipeline - standalone VDB infer/export tool
 
-A single, self-contained executable that merges two stages of the
-weakly-supervised geology pipeline. It has **no dependency on the DTGeoStudio
-source tree** — the feature contract and descriptive statistics that used to
-come from project headers are inlined into `dt_pipeline.cpp`.
+`process/dt_pipeline` is the standalone C++ bridge between the coarse
+classifier and the fine nnU-Net/3D-TransUNet stage. It has no dependency on the
+DTGeoStudio source tree. The feature contract lives in `process/contract.h`, and
+the embedded Python model runner lives in `process/model_utils.py`.
 
-| Sub-command | Was            | Does                                                            |
-|-------------|----------------|----------------------------------------------------------------|
-| `infer`     | `test/wrapper.cpp`  | Runs a pre-trained model to produce voxel-level soft pseudo-labels (`result_*.vdb`) and a `dataset.json`. |
-| `export`    | `test/external.cpp` | Converts the inference result `.vdb` volumes to a nnU-Net / MONAI style `.nii.gz` dataset. |
+| Sub-command | Role | Main output |
+|---|---|---|
+| `infer` | Run a trained coarse model over flat `input_*.vdb` volumes. | `result_<case>.vdb` plus an inference `dataset.json`. |
+| `export` | Convert the infer results to an nnU-Net/MONAI-style binary dataset. | `imagesTr/Ts`, `labelsTr/Ts`, `probsTr/Ts`, and `dataset.json`. |
 
-Unlike the originals, `infer` no longer walks a `project/site/TSP` directory
-tree. All `input_*.vdb` volumes are read directly from a **single flat folder**
-given by `--input-dir`, and `result_*.vdb` are written back into the same folder.
+The tool reads every `input_*.vdb` directly from one flat `--input-dir`; it does
+not walk a nested `project/site/TSP` tree. For each case, the case id is the
+filename part after `input_` and before `.vdb`.
 
 ## Dependencies
 
-- OpenVDB (with TBB)
-- VTK 9 (CommonCore, CommonDataModel, IOImage — provides the NIFTI writer)
-- pybind11 + a Python 3 development install (embedded interpreter)
+- CMake 3.18+
+- C++17 compiler
+- OpenVDB with TBB
+- VTK 9 components `CommonCore`, `CommonDataModel`, `IOImage`
+- pybind11 and a Python 3 development install
 - nlohmann_json
-- At runtime: `numpy`, `pandas`, `joblib`, and the model's own deps (scikit-learn / xgboost)
+- Runtime Python packages: `numpy`, `pandas`, `joblib`, plus the saved model's
+  own dependencies such as scikit-learn or xgboost
 
-## Build (Linux, Ninja preferred)
+## Build
+
+Linux helper:
 
 ```bash
 cd process
-./build.sh # configures + builds into ./build
+./build.sh
 ```
 
-The executable lands at `process/build/dt_pipeline`, with `model_utils.py` copied
-alongside it.
+`build.sh` configures `process/build` with Ninja when available, falls back to
+Unix Makefiles, and passes `-DCMAKE_PREFIX_PATH="${CONDA_PREFIX}"`. The built
+binary is `process/build/dt_pipeline`; `model_utils.py` is copied next to it.
 
-## Usage
+Equivalent manual CMake from the repository root:
 
-### infer
+```bash
+cmake -S process -B process/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"
+cmake --build process/build --config Release --parallel
+```
+
+## Feature Contract
+
+`infer` always requires a sidecar next to the model:
+
+```text
+<model-stem>.features.json
+```
+
+For `models/rf_fragment.joblib`, the required sidecar is
+`models/rf_fragment.features.json`. The sidecar is written by
+`segment coarse-train` when `configs/geology.yaml` sets `process.feature_mode`.
+It is validated before inference:
+
+- `feature_mode`
+- `depth`
+- `size`
+- exact `feature_columns` order
+- optional `label_columns` against `--classes`
+- optional `recommended_thresholds` used for hard labels
+
+Supported feature modes are defined in `process/contract.h` and mirrored by
+`segment/process_contract.py`.
+
+| Mode | Columns | Notes |
+|---|---:|---|
+| `baseline` | 12 | Base window statistics for `vp`, `vs`, `depth`: mean, Q25, median, Q75. |
+| `multiscale` | 36 | Baseline plus small and large windows. |
+| `directional` | 87 | Multiscale plus axial/lateral/vertical windows and gradient/contrast features. |
+| `hybrid_spatial` | 72 | Multiscale plus distribution stats, fixed samples, and valid-sample ratios. |
+| `spatial_v1` | 51 | Base stats plus local gradient energy, anisotropy, and roughness features. |
+
+Hard labels are thresholded per class using `recommended_thresholds` from the
+sidecar. Missing or invalid thresholds fall back to `0.5`.
+
+## Infer
 
 ```bash
 ./build/dt_pipeline infer \
-    --input-dir /data/volumes \
-    --model /models/coarse.pkl \
-    --pyhome /usr \
-    --scripts ./build \
-    --depth 4 --size 32 \
-    --classes fragment,hardness,watery \
-    --feature-mode multiscale \
-    --held-out 0007,0012 \
-    --dataset-out /data/volumes/dataset.json
+  --input-dir /data/flat_vdb \
+  --model /models/rf_fragment.joblib \
+  --scripts ./build \
+  --depth 4 --size 64 \
+  --feature-mode baseline \
+  --classes fragment \
+  --held-out 0007,0012 \
+  --dataset-out /data/flat_vdb/dataset.json
 ```
 
-- Requires a feature-contract sidecar next to the model:
-  `<model-stem>.features.json` (validates feature_mode / depth / size / columns).
-- The embedded `model_utils.py` accepts either a scikit-learn
-  `MultiOutputClassifier` whose `predict_proba` returns one output per class, or
-  a single binary model saved by `segment coarse-train` (run `infer` with the
-  matching single `--classes <type>` in that case).
-- `--scripts` must point at the directory containing `model_utils.py`.
-- Each `input_<case>.vdb` produces `result_<case>.vdb` in `--input-dir`.
-- `--feature-mode` follows the shared DTGeoStudio contract:
-  `baseline`, `multiscale`, `directional`, `hybrid_spatial`, or `spatial_v1`.
-- In sampling mode, each `input_<case>.vdb` uses the matching
-  `mask_<case>.vdb` topology as the pseudo-label region; pass `--mask full` or
-  `--full-volume` to infer every active voxel, or `--sampling-mask <vdb>` to
-  point at a specific mask.
-- Hard labels use per-class `recommended_thresholds` from the feature sidecar
-  when present, with a 0.5 fallback.
+Required:
 
-### export
+- `--input-dir <dir>`: flat directory containing `input_<case>.vdb`.
+- `--model <pkl|joblib>`: trained model loadable by `joblib.load`.
+
+Common options:
+
+- `--scripts <dir>`: directory containing `model_utils.py`. Usually
+  `process/build`.
+- `--pyhome <dir>`: optional Python home for the embedded interpreter. When
+  `--scripts` is omitted and `--pyhome` is set, scripts defaults to
+  `<pyhome>/../scripts`.
+- `--depth <n>`: window size along the tunnel/advance axis. Default `4`.
+- `--size <n>`: cross-section window size. Default `32`.
+- `--feature-mode <mode>`: default `multiscale`.
+- `--classes a,b,c`: class names and output grid names. Default
+  `fragment,hardness,watery`.
+- `--held-out caseA,caseB`: cases exported later to `imagesTs/labelsTs`.
+- `--dataset-out <json>`: default `<input-dir>/dataset.json`.
+- `--start-index <n>`: skip numeric case ids below `n`, useful for resuming.
+
+### Input VDBs
+
+Each `input_<case>.vdb` must contain active FloatGrids named:
+
+- `vp`
+- `vs`
+- `depth`
+
+By default, inference only runs on a sampling mask:
+
+- case-local mask: `mask_<case>.vdb` in `--input-dir`
+- shared override: `--sampling-mask <mask.vdb>`
+
+If no mask is present, the case is skipped. Use `--mask full`, `--mask none`,
+`--mask all`, or `--full-volume` to infer every active voxel in the input
+volume. `--mask sampling`, `--mask interval`, and `--mask mask` select the
+sampling-mask behavior.
+
+### Model Formats
+
+`model_utils.py` supports:
+
+- a scikit-learn-style `MultiOutputClassifier`, where `predict_proba` returns a
+  list with one probability array per class;
+- a single binary estimator blob saved by `segment coarse-train`, with keys such
+  as `estimator`, `num_classes`, and optional `col_mean`;
+- a single binary model whose `predict_proba` returns one probability array.
+
+For the single-binary workflow, run `infer` with the matching one-item
+`--classes <type>` and export that same type.
+
+### Infer Outputs
+
+For every processed case, `infer` writes:
+
+```text
+result_<case>.vdb
+```
+
+Each result VDB contains, for every class in `--classes`:
+
+- `<class>`: hard 0/1 pseudo-label grid
+- `prob_<class>`: positive-class probability grid
+
+Existing `result_<case>.vdb` files are not recomputed. The tool tries to recover
+their positive ratios from the VDB; if that fails, it uses cached `status` from
+the existing `dataset.json`, then falls back to `0.5`.
+
+The inference `dataset.json` is an array. Each entry includes:
+
+- `case_id`
+- `iid`
+- `held_out`
+- `input`
+- `path`
+- `classes`
+- `status`: per-class positive voxel ratios
+- `label_source`: `pseudo_label`
+- `probability_role`: `positive_class_probability`
+- `feature_mode`
+- `feature_columns`
+- `thresholds`
+- `inference_region`: `sampling_interval` or `full_volume`
+
+## Export
 
 ```bash
 ./build/dt_pipeline export \
-    --dataset /data/volumes/dataset.json \
-    --out /data/nnunet/Dataset001 \
-    --type fragment \
-    --class-name fracture_zone
+  --dataset /data/flat_vdb/dataset.json \
+  --out /data/nnunet/Dataset011_FragmentCC \
+  --type fragment \
+  --class-name fracture_zone
 ```
 
-`--type` accepts a class name or a numeric index into the class list. Held-out
-cases go to the `*Ts` split; the rest go to `*Tr`.
+Required:
 
-Each export call writes one nnU-Net-ready binary dataset for the selected type:
-`images*` contains `[vp, vs, depth, probfg]`, `labels*` contains
-`<case>.nii.gz`, and `probs*` keeps a `probfg` sidecar for inspection. Export
-each geology type to a separate dataset folder when training three independent
-binary fine-stage models.
+- `--dataset <json>`: inference metadata from `infer`.
+- `--out <dir>`: output dataset root.
 
-By default, export preserves the full VDB active extent for each case, performs
-no positive-ratio filtering, and does not median-filter labels. These optional
-cleaning / ROI controls are available when you explicitly want them:
+Common options:
+
+- `--type <name|idx>`: result grid to export. Numeric defaults are
+  `0=fragment`, `1=hardness`, `2=watery`; names may also be custom class names.
+- `--class-name <label>`: label name written into the exported nnU-Net
+  `dataset.json`. Defaults to `--type`.
+- `--start-index <n>`: skip numeric case ids below `n`.
+- `--width <n>`: median-filter width for labels. Default `0` means no filtering.
+- `--ratio-filter --minr <a> --maxr <b>`: skip non-held-out training cases whose
+  positive ratio is outside `(minr, maxr)`. Held-out cases are always exported.
+- `--extent x,y,z`: optionally clip to a fixed VDB extent; if the volume is too
+  small, clipping is skipped for that grid.
+
+Export one geology type to one dataset folder. The project treats geology types
+as independent binary targets, so overlapping types should not be merged into a
+single multi-class label map.
+
+### Export Outputs
+
+For each entry in the inference metadata:
+
+- `held_out=false` goes to `imagesTr`, `labelsTr`, `probsTr`.
+- `held_out=true` goes to `imagesTs`, `labelsTs`, `probsTs`.
+
+The output files are:
+
+```text
+imagesTr/<case>_0000.nii.gz   # vp
+imagesTr/<case>_0001.nii.gz   # vs
+imagesTr/<case>_0002.nii.gz   # depth
+imagesTr/<case>_0003.nii.gz   # probfg, P(class=1)
+labelsTr/<case>.nii.gz        # hard 0/1 pseudo-label
+probsTr/<case>.nii.gz         # probfg sidecar for inspection/metrics
+```
+
+`imagesTs`, `labelsTs`, and `probsTs` use the same naming pattern.
+
+The exported `dataset.json` contains:
+
+- `channel_names`: `0=vp`, `1=vs`, `2=depth`, `3=probfg`
+- `labels`: `background=0`, `<class-name>=1`
+- `numTraining`
+- `file_ending`: `.nii.gz`
+- `label_source`: `pseudo_label`
+- `probability_role`: `foreground_probability_soft_target`
+- `geology_classes`: `[<class-name>]`
+
+## End-to-End Pattern
+
+Train one coarse binary model per geology type, infer on the flat VDB folder,
+then export the selected type to a fine-stage nnU-Net dataset:
 
 ```bash
-./build/dt_pipeline export \
-    --dataset /data/volumes/dataset.json \
-    --out /data/nnunet/Dataset001_filtered \
-    --type fragment \
-    --class-name fracture_zone \
-    --ratio-filter --minr 0.3 --maxr 0.7 \
-    --width 3 \
-    --extent 256,128,128
+segment coarse-train \
+  --dataset Dataset010_Geology \
+  --class fracture_zone \
+  --out models/rf_fracture_zone.joblib
+
+process/build/dt_pipeline infer \
+  --input-dir /data/flat_vdb \
+  --model models/rf_fracture_zone.joblib \
+  --scripts process/build \
+  --depth 4 --size 64 \
+  --feature-mode baseline \
+  --classes fracture_zone \
+  --dataset-out /data/flat_vdb/fracture_zone.dataset.json
+
+process/build/dt_pipeline export \
+  --dataset /data/flat_vdb/fracture_zone.dataset.json \
+  --out "$nnUNet_raw/Dataset011_FractureZoneCC" \
+  --type fracture_zone \
+  --class-name fracture_zone
 ```
+
+Repeat the same pattern for each independent geology type.
