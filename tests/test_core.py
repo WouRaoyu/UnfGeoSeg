@@ -154,6 +154,36 @@ def test_pseudolabel_probability_is_foreground_probability():
     assert np.allclose(pl.confidence, 0.7)
 
 
+def test_process_contract_baseline_columns_and_features():
+    contract = pytest.importorskip("segment.process_contract")
+    features = pytest.importorskip("segment.coarse.features")
+
+    cols = contract.feature_columns("baseline")
+    assert cols == [
+        "vpMean",
+        "vsMean",
+        "depthMean",
+        "vpQ25",
+        "vsQ25",
+        "depthQ25",
+        "vpMedian",
+        "vsMedian",
+        "depthMedian",
+        "vpQ75",
+        "vsQ75",
+        "depthQ75",
+    ]
+
+    vols = [np.ones((3, 3, 3), dtype=np.float32) * i for i in (1, 2, 3)]
+    feat = features.compute_process_feature_volumes(
+        vols, depth=3, size=3, feature_mode="baseline"
+    )
+    assert feat.shape == (len(cols), 3, 3, 3)
+    assert np.allclose(feat[0], 1.0)
+    assert np.allclose(feat[1], 2.0)
+    assert np.allclose(feat[2], 3.0)
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

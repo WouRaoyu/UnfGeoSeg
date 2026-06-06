@@ -72,6 +72,19 @@ class Config:
         return int(self.raw.get("sampling", {}).get("mode_decimals", 2))
 
     @property
+    def process_feature_mode(self) -> Optional[str]:
+        value = self.raw.get("process", {}).get("feature_mode")
+        return None if value in (None, "", "legacy") else str(value)
+
+    @property
+    def process_depth(self) -> int:
+        return int(self.raw.get("process", {}).get("depth", 4))
+
+    @property
+    def process_size(self) -> int:
+        return int(self.raw.get("process", {}).get("size", 64))
+
+    @property
     def lambda_kl(self) -> float:
         return float(self.raw.get("fine", {}).get("lambda_kl", 0.3))
 

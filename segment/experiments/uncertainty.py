@@ -30,6 +30,11 @@ def _pseudolabel_proba(pseudolabel_dir: Path, case: str, n_classes: int, file_en
     hard, _ = read_volume(pseudolabel_dir / f"{case}{file_ending}")
     probfg_path = pseudolabel_dir / f"probfg_{case}{file_ending}"
     prob_path = probfg_path if probfg_path.exists() else pseudolabel_dir / f"prob_{case}{file_ending}"
+    if not prob_path.exists() and pseudolabel_dir.name.startswith("labels"):
+        split = pseudolabel_dir.name.removeprefix("labels")
+        exported_prob = pseudolabel_dir.parent / f"probs{split}" / f"{case}{file_ending}"
+        if exported_prob.exists():
+            prob_path = exported_prob
     if prob_path.exists() and n_classes == 2:
         fg_prob, _ = read_volume(prob_path)
         fg_prob = np.clip(fg_prob.astype(np.float32), 0.0, 1.0)

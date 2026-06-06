@@ -29,7 +29,7 @@ from typing import Optional, Sequence, Tuple
 import numpy as np
 
 from ..io import Geometry, write_volume
-from .features import compute_feature_volumes
+from .features import compute_feature_volumes, compute_process_feature_volumes
 from .rf_classifier import CoarseClassifier
 
 
@@ -50,11 +50,19 @@ def generate_pseudolabels(
     valid_mask: Optional[np.ndarray] = None,
     chunk: int = 200_000,
     return_proba: bool = False,
+    process_feature_mode: str | None = None,
+    process_depth: int = 4,
+    process_size: int = 64,
 ) -> PseudoLabelVolume:
     """Dense sliding-box inference over a whole volume."""
-    feats = compute_feature_volumes(
-        channel_volumes, half_window, statistics, mode_decimals
-    )  # (F, z, y, x)
+    if process_feature_mode:
+        feats = compute_process_feature_volumes(
+            channel_volumes, process_depth, process_size, process_feature_mode
+        )
+    else:
+        feats = compute_feature_volumes(
+            channel_volumes, half_window, statistics, mode_decimals
+        )  # (F, z, y, x)
     shape = channel_volumes[0].shape
     n_cls = classifier.num_classes + 1
 

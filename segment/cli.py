@@ -15,6 +15,7 @@ Examples
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 from typing import List
@@ -104,6 +105,7 @@ def cmd_uninstall_trainers(args):
 def cmd_coarse_train(args):
     from .coarse.rf_classifier import CoarseClassifier
     from .experiments.records import build_records
+    from .process_contract import feature_columns
 
     dataset_dir = _resolve_dataset(args.dataset)
     cfg = effective_config(dataset_dir, args.config, args.geology_class)
@@ -112,12 +114,37 @@ def cmd_coarse_train(args):
     rec = build_records(dataset_dir, channels, cfg.half_window, cfg.statistics,
                         cfg.mode_decimals, n_per_class=args.n_per_class, seed=42,
                         class_name=cfg.classes[0],
-                        strict_per_class=len(cfg.geology_classes) > 1)
+                        strict_per_class=len(cfg.geology_classes) > 1,
+                        process_feature_mode=cfg.process_feature_mode,
+                        process_depth=cfg.process_depth,
+                        process_size=cfg.process_size)
     clf = CoarseClassifier(model=args.model_type, num_classes=len(cfg.classes),
                            params=cfg.get("coarse", "random_forest", default={}))
     clf.fit(rec["X"], rec["y"])
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     clf.save(args.out)
+    if cfg.process_feature_mode:
+        sidecar = Path(args.out).with_suffix(".features.json")
+        cols = feature_columns(cfg.process_feature_mode)
+        with open(sidecar, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "schema_version": 1,
+                    "feature_mode": cfg.process_feature_mode,
+                    "depth": cfg.process_depth,
+                    "size": cfg.process_size,
+                    "feature_columns": cols,
+                    "label_columns": cfg.classes,
+                    "feature_count": len(cols),
+                    "model_out": str(Path(args.out)),
+                    "recommended_thresholds": {
+                        name: {"threshold": 0.5} for name in cfg.classes
+                    },
+                },
+                fh,
+                indent=2,
+            )
+        print(f"Wrote process feature contract -> {sidecar}")
     print(f"Trained {args.model_type} (binary, class={cfg.classes[0]}) on "
           f"{rec['X'].shape[0]} records -> {args.out}")
 
@@ -138,7 +165,10 @@ def cmd_pseudolabel(args):
     for case in cases:
         vol, geom = read_case(dataset_dir / "imagesTr", case, len(channels), fe)
         pl = generate_pseudolabels(list(vol), clf, cfg.half_window, cfg.statistics,
-                                   cfg.mode_decimals)
+                                   cfg.mode_decimals,
+                                   process_feature_mode=cfg.process_feature_mode,
+                                   process_depth=cfg.process_depth,
+                                   process_size=cfg.process_size)
         write_pseudolabels(pl, geom, out_dir, case, fe)
         print(f"  pseudo-labelled {case}")
     print(f"Wrote pseudo-labels + foreground probabilities/probfg to {out_dir}")
@@ -216,6 +246,87 @@ def cmd_plot_training(args):
     print(f"Wrote training curves plot -> {paths['png']}")
 
 
+def _fine_experiment_config(args) -> Config:
+    dataset_dir = _resolve_dataset(args.dataset)
+    return effective_config(dataset_dir, args.config, args.geology_class)
+
+
+def cmd_e2(args):
+    from .experiments import e2_tfr_finegrained
+
+    rows = e2_tfr_finegrained.run(
+        args.pred,
+        args.reference,
+        config=_fine_experiment_config(args),
+        out_dir=args.out,
+    )
+    for r in rows:
+        print(r)
+
+
+def cmd_e3(args):
+    from .experiments import e3_borehole
+
+    rows = e3_borehole.run(
+        args.pred,
+        args.reference,
+        config=_fine_experiment_config(args),
+        out_dir=args.out,
+    )
+    for r in rows:
+        print(r)
+
+
+def cmd_e4(args):
+    from .experiments import e4_pseudo_vs_refined
+
+    rows = e4_pseudo_vs_refined.run(
+        args.pred,
+        args.pseudolabels,
+        args.reference,
+        config=_fine_experiment_config(args),
+        out_dir=args.out,
+    )
+    for r in rows:
+        print(r)
+
+
+def _parse_key_value_pairs(items: List[str], key_type=str):
+    out = {}
+    for item in items:
+        if "=" not in item:
+            raise ValueError(f"expected KEY=VALUE, got {item!r}")
+        key, value = item.split("=", 1)
+        out[key_type(key)] = value
+    return out
+
+
+def cmd_e5(args):
+    from .experiments import e5_lambda_sensitivity
+
+    rows = e5_lambda_sensitivity.run(
+        _parse_key_value_pairs(args.lambda_pred, float),
+        args.reference,
+        config=_fine_experiment_config(args),
+        out_dir=args.out,
+    )
+    for r in rows:
+        print(r)
+
+
+def cmd_uncertainty(args):
+    from .experiments import uncertainty
+
+    rows = uncertainty.run(
+        _parse_key_value_pairs(args.method_pred),
+        classes_config=_fine_experiment_config(args),
+        pseudolabel_dir=args.pseudolabels,
+        out_dir=args.out,
+    )
+    for r in rows:
+        print(r)
+
+
 # ---------------------------------------------------------------------------
 # parser
 # ---------------------------------------------------------------------------
@@ -276,6 +387,47 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--out", default=None, help="output directory; defaults to run_dir")
     sp.add_argument("--smooth", type=int, default=5, help="moving-average window")
     sp.set_defaults(func=cmd_plot_training)
+
+    def add_fine_common(sp):
+        add_common(sp)
+        add_class(sp)
+        sp.add_argument("--dataset", required=True,
+                        help="process-exported/fine nnU-Net raw dataset")
+        sp.add_argument("--pred", required=True,
+                        help="nnU-Net prediction directory")
+        sp.add_argument("--reference", required=True,
+                        help="reference label directory, normally labelsTr or labelsTs")
+
+    sp = sub.add_parser("e2"); add_fine_common(sp)
+    sp.add_argument("--out", default="results/e2_tfr")
+    sp.set_defaults(func=cmd_e2)
+
+    sp = sub.add_parser("e3"); add_fine_common(sp)
+    sp.add_argument("--out", default="results/e3_borehole")
+    sp.set_defaults(func=cmd_e3)
+
+    sp = sub.add_parser("e4"); add_fine_common(sp)
+    sp.add_argument("--pseudolabels", required=True,
+                    help="process labelsTr/labelsTs or legacy pseudolabel dir")
+    sp.add_argument("--out", default="results/e4_pseudo_vs_refined")
+    sp.set_defaults(func=cmd_e4)
+
+    sp = sub.add_parser("e5"); add_common(sp); add_class(sp)
+    sp.add_argument("--dataset", required=True)
+    sp.add_argument("--reference", required=True)
+    sp.add_argument("--lambda-pred", action="append", required=True,
+                    help="lambda=prediction_dir; repeat for each lambda")
+    sp.add_argument("--out", default="results/e5_lambda")
+    sp.set_defaults(func=cmd_e5)
+
+    sp = sub.add_parser("uncertainty"); add_common(sp); add_class(sp)
+    sp.add_argument("--dataset", required=True)
+    sp.add_argument("--method-pred", action="append", required=True,
+                    help="name=prediction_dir; repeat for each method")
+    sp.add_argument("--pseudolabels", default=None,
+                    help="process labelsTr/labelsTs or legacy pseudolabel dir")
+    sp.add_argument("--out", default="results/uncertainty")
+    sp.set_defaults(func=cmd_uncertainty)
 
     return p
 

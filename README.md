@@ -78,37 +78,35 @@ each of `fracture_zone` / `soft_rock` / `water_rich_zone` and suffix the
 artifacts — or just use `scripts/run_all.ps1 -Classes ...`.
 
 ```powershell
-# 1. coarse classifier + pseudo-labels (+ foreground probability/probfg)
-segment coarse-train --dataset Dataset005_Hardness --class unfavorable --out models/rf_unfavorable.joblib
-segment pseudolabel  --dataset Dataset005_Hardness --class unfavorable --model models/rf_unfavorable.joblib `
-                        --out $env:nnUNet_raw/_pseudolabels_Dataset005_unfavorable
+# 1. process/dt_pipeline inference writes result_*.vdb + dataset.json
+process/build/dt_pipeline infer `
+  --input-dir D:\Volumes\flat_vdb `
+  --model models/rf_unfavorable.joblib `
+  --scripts process/build `
+  --depth 4 --size 64 --feature-mode baseline `
+  --classes unfavorable `
+  --dataset-out D:\Volumes\flat_vdb\dataset.json
 
-# 2. probability-augmented dataset ([vp, vs, depth, probfg] + binary pseudo-label)
-segment build-cc --src Dataset005_Hardness --class unfavorable `
-                    --pseudolabels $env:nnUNet_raw/_pseudolabels_Dataset005_unfavorable `
-                    --dst Dataset011_HardnessCC_unfavorable
-
-# 3. nnU-Net preprocess; keep probfg carrier channel un-normalized; write splits
-nnUNetv2_extract_fingerprint -d 11 --verify_dataset_integrity
-nnUNetv2_plan_experiment -d 11
-python -c "from segment.fine.dataset import patch_plans_no_norm_probfg as p; import os; p(os.path.join(os.environ['nnUNet_preprocessed'],'Dataset011_HardnessCC_unfavorable'))"
-nnUNetv2_preprocess -d 11 -c 3d_fullres
-segment make-splits --dataset Dataset011_HardnessCC_unfavorable
-
-# 4. train (proposed + baselines)
-$env:UNFAVORSEG_LAMBDA = "0.3"
-$env:UNFAVORSEG_EPOCHS = "100"
-# Optional when curves oscillate strongly:
-# $env:UNFAVORSEG_LR = "0.003"
-nnUNetv2_train 11 3d_fullres 0 -tr nnUNetTrainerTransUNetCC   # proposed
-nnUNetv2_train 11 3d_fullres 0 -tr nnUNetTrainerTransUNet     # plain 3D-TransUNet
-nnUNetv2_train 11 3d_fullres 0 -tr nnUNetTrainerUnfavorSeg    # nnU-Net baseline
+# 2. process export + nnU-Net preprocess/train
+bash scripts/run_fine.sh `
+  --dataset-json D:\Volumes\flat_vdb\dataset.json `
+  --classes unfavorable `
+  --cc-base HardnessCC `
+  --cc-id-base 11
 ```
 
-`probfg_<case>.nii.gz` (and legacy `prob_<case>.nii.gz`) is the foreground
-probability `P(class=1)`. The probability-constrained trainer carries this map as
-the 4th nnU-Net image channel only to keep it aligned with crops/augmentation;
-the network wrapper drops it before forward and the loss reads it for the KL
+`process/contract.h` is the source of truth for coarse features. When
+`configs/geology.yaml` sets `process.feature_mode`, the Python coarse
+experiments use the same feature columns and `segment coarse-train` writes the
+`<model>.features.json` sidecar required by `dt_pipeline infer`. The legacy
+`segment pseudolabel/build-cc` route is retained for smoke tests, but the
+process route is the canonical workflow.
+
+The exported `imagesTr/<case>_0003.nii.gz` channel is the foreground probability
+`P(class=1)`. `probsTr/<case>.nii.gz` keeps the same map as an inspection and
+uncertainty sidecar. The probability-constrained trainer carries this map as the
+4th nnU-Net image channel only to keep it aligned with crops/augmentation; the
+network wrapper drops it before forward and the loss reads it for the KL
 soft-target term. `λ=0` reduces the loss exactly to the standard nnU-Net loss.
 
 ## Experiments (maps to manuscript tables)
@@ -135,8 +133,13 @@ nnUNetv2_predict -i $env:nnUNet_raw/Dataset011_HardnessCC_unfavorable/imagesTr `
                  -o results/pred_proposed_unfavorable -d 11 -c 3d_fullres -f 0 `
                  -tr nnUNetTrainerTransUNetCC --save_probabilities
 
-python -c "from segment.experiments import e4_pseudo_vs_refined as e; e.run('results/pred_proposed_unfavorable', r'$env:nnUNet_raw/_pseudolabels_Dataset005_unfavorable', r'$env:nnUNet_raw/Dataset005_Hardness/labelsTr')"
-python -c "from segment.experiments import uncertainty as u; u.run({'nnU-Net':'results/pred_nnunet_unfavorable','3D-TransUNet':'results/pred_plain_unfavorable','Proposed':'results/pred_proposed_unfavorable'}, pseudolabel_dir=r'$env:nnUNet_raw/_pseudolabels_Dataset005_unfavorable')"
+segment e4 --dataset Dataset011_HardnessCC_unfavorable `
+           --pred results/pred_proposed_unfavorable `
+           --pseudolabels $env:nnUNet_raw/Dataset011_HardnessCC_unfavorable/labelsTr `
+           --reference D:\ReferenceLabels\labelsTr
+segment uncertainty --dataset Dataset011_HardnessCC_unfavorable `
+                    --method-pred Proposed=results/pred_proposed_unfavorable `
+                    --pseudolabels $env:nnUNet_raw/Dataset011_HardnessCC_unfavorable/labelsTr
 ```
 
 Results (CSV + Markdown) are written under `results/`.

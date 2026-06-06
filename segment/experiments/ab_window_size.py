@@ -39,21 +39,34 @@ def run(dataset_dir, config: Config | None = None, out_dir="results/ab_window_si
         half_windows: Sequence[Sequence[int]] = None, n_per_class: int = 1500) -> List[Dict]:
     cfg = config or load_config()
     classes = cfg.classes
+    channels = [c for c in cfg.channels if c not in {"confidence", "probfg"}]
+    process_mode = cfg.process_feature_mode
     rf_params = cfg.get("coarse", "random_forest", default={})
     half_windows = half_windows or DEFAULT_HALF_WINDOWS
 
     rows: List[Dict] = []
     for idx, hw in enumerate(half_windows):
-        rec = build_records(dataset_dir, cfg.channels, hw, cfg.statistics,
+        process_depth = 2 * int(hw[0]) + 1
+        process_size = 2 * int(hw[-1]) + 1
+        rec = build_records(dataset_dir, channels, hw, cfg.statistics,
                             cfg.mode_decimals, n_per_class=n_per_class, seed=42,
                             class_name=classes[0],
-                            strict_per_class=len(cfg.geology_classes) > 1)
+                            strict_per_class=len(cfg.geology_classes) > 1,
+                            process_feature_mode=process_mode,
+                            process_depth=process_depth,
+                            process_size=process_size)
         X, y, groups = rec["X"], rec["y"], rec["groups"]
         if len(set(groups.tolist())) < 2:
             groups = rec["cases"]
         f1 = _loto_f1(X, y, groups, classes, rf_params)
-        row = {"Index": idx, "half_window": "x".join(map(str, hw)),
-               "size_voxels": int(np.prod([2 * h + 1 for h in hw]))}
+        row = {
+            "Index": idx,
+            "half_window": "x".join(map(str, hw)),
+            "size_voxels": int(np.prod([2 * h + 1 for h in hw])),
+            "process_box": f"{process_depth}x{process_size}x{process_size}"
+            if process_mode
+            else "",
+        }
         row.update({name: f1[name] for name in classes})
         row["macro_F1"] = float(np.mean([f1[name] for name in classes]))
         rows.append(row)
@@ -62,5 +75,6 @@ def run(dataset_dir, config: Config | None = None, out_dir="results/ab_window_si
     for r in rows:
         r["best"] = "*" if r is best else ""
     write_table(rows, Path(out_dir) / "fig12_window_size",
-                columns=["Index", "half_window", "size_voxels", *classes, "macro_F1", "best"])
+                columns=["Index", "half_window", "size_voxels", "process_box",
+                         *classes, "macro_F1", "best"])
     return rows

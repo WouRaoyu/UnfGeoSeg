@@ -51,6 +51,10 @@ alongside it.
 
 - Requires a feature-contract sidecar next to the model:
   `<model-stem>.features.json` (validates feature_mode / depth / size / columns).
+- The embedded `model_utils.py` accepts either a scikit-learn
+  `MultiOutputClassifier` whose `predict_proba` returns one output per class, or
+  a single binary model saved by `segment coarse-train` (run `infer` with the
+  matching single `--classes <type>` in that case).
 - `--scripts` must point at the directory containing `model_utils.py`.
 - Each `input_<case>.vdb` produces `result_<case>.vdb` in `--input-dir`.
 - `--feature-mode` follows the shared DTGeoStudio contract:

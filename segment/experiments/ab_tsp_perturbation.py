@@ -21,6 +21,7 @@ import numpy as np
 
 from ..coarse.rf_classifier import CoarseClassifier
 from ..config import Config, load_config
+from ..process_contract import feature_columns
 from .eval_metrics import classwise_metrics
 from .records import build_records
 from .report import write_table
@@ -52,14 +53,19 @@ def run(dataset_dir, config: Config | None = None, out_dir="results/ab_tsp_pertu
         levels: Sequence[float] = None, n_per_class: int = 1500) -> List[Dict]:
     cfg = config or load_config()
     classes = cfg.classes
+    channels = [c for c in cfg.channels if c not in {"confidence", "probfg"}]
     n_stats = len(cfg.statistics)
+    process_mode = cfg.process_feature_mode
     rf_params = cfg.get("coarse", "random_forest", default={})
     levels = levels or cfg.get("perturbation", "velocity_levels", default=[0.03, 0.05, 0.10])
 
-    rec = build_records(dataset_dir, cfg.channels, cfg.half_window, cfg.statistics,
+    rec = build_records(dataset_dir, channels, cfg.half_window, cfg.statistics,
                         cfg.mode_decimals, n_per_class=n_per_class, seed=42,
                         class_name=classes[0],
-                        strict_per_class=len(cfg.geology_classes) > 1)
+                        strict_per_class=len(cfg.geology_classes) > 1,
+                        process_feature_mode=process_mode,
+                        process_depth=cfg.process_depth,
+                        process_size=cfg.process_size)
     X, y, groups = rec["X"], rec["y"], rec["groups"]
     if len(set(groups.tolist())) < 2:
         groups = rec["cases"]
@@ -74,7 +80,14 @@ def run(dataset_dir, config: Config | None = None, out_dir="results/ab_tsp_pertu
         clf.fit(X[train], y[train])
         clfs[held] = clf
 
-    vcols = _velocity_cols(len(cfg.channels), n_stats)
+    if process_mode:
+        cols = feature_columns(process_mode)
+        vcols = [
+            i for i, name in enumerate(cols)
+            if name.startswith("vp") or name.startswith("vs")
+        ]
+    else:
+        vcols = _velocity_cols(len(channels), n_stats)
     rows: List[Dict] = []
 
     def add_row(label, Xp, interp):

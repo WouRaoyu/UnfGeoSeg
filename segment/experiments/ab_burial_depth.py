@@ -14,6 +14,7 @@ import numpy as np
 
 from ..coarse.rf_classifier import CoarseClassifier
 from ..config import Config, load_config
+from ..process_contract import feature_columns
 from .eval_metrics import classwise_metrics
 from .records import build_records
 from .report import write_table
@@ -37,20 +38,31 @@ def run(dataset_dir, config: Config | None = None, out_dir="results/ab_burial_de
         n_per_class: int = 2000) -> List[Dict]:
     cfg = config or load_config()
     classes = cfg.classes
+    channels = [c for c in cfg.channels if c not in {"confidence", "probfg"}]
     n_stats = len(cfg.statistics)
+    process_mode = cfg.process_feature_mode
     rf_params = cfg.get("coarse", "random_forest", default={})
 
-    rec = build_records(dataset_dir, cfg.channels, cfg.half_window, cfg.statistics,
+    rec = build_records(dataset_dir, channels, cfg.half_window, cfg.statistics,
                         cfg.mode_decimals, n_per_class=n_per_class, seed=42,
                         class_name=classes[0],
-                        strict_per_class=len(cfg.geology_classes) > 1)
+                        strict_per_class=len(cfg.geology_classes) > 1,
+                        process_feature_mode=process_mode,
+                        process_depth=cfg.process_depth,
+                        process_size=cfg.process_size)
     X, y, groups = rec["X"], rec["y"], rec["groups"]
     if len(set(groups.tolist())) < 2:
         groups = rec["cases"]
 
-    # depth is the last channel -> its features are the final n_stats columns
-    depth_cols = slice((len(cfg.channels) - 1) * n_stats, len(cfg.channels) * n_stats)
-    keep_no_depth = [i for i in range(X.shape[1]) if not (depth_cols.start <= i < depth_cols.stop)]
+    if process_mode:
+        cols = feature_columns(process_mode)
+        keep_no_depth = [i for i, name in enumerate(cols) if not name.startswith("depth")]
+    else:
+        # depth is the last channel -> its features are the final n_stats columns
+        depth_cols = slice((len(channels) - 1) * n_stats, len(channels) * n_stats)
+        keep_no_depth = [
+            i for i in range(X.shape[1]) if not (depth_cols.start <= i < depth_cols.stop)
+        ]
 
     with_db = _loto_metrics(X, y, groups, classes, rf_params)
     without_db = _loto_metrics(X[:, keep_no_depth], y, groups, classes, rf_params)

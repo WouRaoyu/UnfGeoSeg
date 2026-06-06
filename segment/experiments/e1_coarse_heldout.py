@@ -30,10 +30,11 @@ def run(
     cfg = config or load_config()
     dataset_dir = Path(dataset_dir)
     classes = cfg.classes
+    channels = [c for c in cfg.channels if c not in {"confidence", "probfg"}]
 
     rec = build_records(
         dataset_dir,
-        cfg.channels,
+        channels,
         cfg.half_window,
         cfg.statistics,
         cfg.mode_decimals,
@@ -41,6 +42,9 @@ def run(
         seed=42,
         class_name=classes[0],
         strict_per_class=len(cfg.geology_classes) > 1,
+        process_feature_mode=cfg.process_feature_mode,
+        process_depth=cfg.process_depth,
+        process_size=cfg.process_size,
     )
     X, y, groups = rec["X"], rec["y"], rec["groups"]
     # Leave-one-tunnel-out; fall back to leave-one-volume-out for a single-project

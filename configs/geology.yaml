@@ -37,6 +37,18 @@ sampling:
   mode_decimals: 2              # rounding precision used to define the mode of continuous values
 
 # ---------------------------------------------------------------------------
+# Standalone process/dt_pipeline feature contract.
+# This is the source of truth for process-compatible coarse experiments and
+# model sidecars. When feature_mode is set, Python coarse experiments use the
+# same feature column order as process/contract.h instead of the legacy
+# sampling.statistics list above.
+# ---------------------------------------------------------------------------
+process:
+  feature_mode: baseline         # baseline, multiscale, directional, hybrid_spatial
+  depth: 4
+  size: 64
+
+# ---------------------------------------------------------------------------
 # Coarse-grained classifier.
 # ---------------------------------------------------------------------------
 coarse:

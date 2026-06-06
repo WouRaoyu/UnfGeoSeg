@@ -18,7 +18,11 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 
-from ..coarse.features import compute_feature_volumes, gather_features
+from ..coarse.features import (
+    compute_feature_volumes,
+    compute_process_feature_volumes,
+    gather_features,
+)
 from ..io import list_cases, read_case, read_volume, resolve_label_path
 
 
@@ -30,11 +34,19 @@ def sample_case_records(
     mode_decimals: int,
     n_per_class: int,
     rng: np.random.Generator,
+    process_feature_mode: str | None = None,
+    process_depth: int = 4,
+    process_size: int = 64,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Stratified voxel sampling for one case -> (features, labels)."""
-    feats = compute_feature_volumes(
-        channel_volumes, half_window, statistics, mode_decimals
-    )
+    if process_feature_mode:
+        feats = compute_process_feature_volumes(
+            channel_volumes, process_depth, process_size, process_feature_mode
+        )
+    else:
+        feats = compute_feature_volumes(
+            channel_volumes, half_window, statistics, mode_decimals
+        )
     coords: List[np.ndarray] = []
     labels: List[int] = []
     for cls in np.unique(label_volume):
@@ -66,6 +78,9 @@ def build_records(
     drop_prob_cases: bool = True,
     class_name: str | None = None,
     strict_per_class: bool = False,
+    process_feature_mode: str | None = None,
+    process_depth: int = 4,
+    process_size: int = 64,
 ) -> Dict[str, np.ndarray]:
     """Assemble records across all labelled cases.
 
@@ -97,7 +112,16 @@ def build_records(
         # independent binary target: any positive voxel is foreground (1)
         label = (label > 0).astype(np.uint8)
         X, y = sample_case_records(
-            list(vol), label, half_window, statistics, mode_decimals, n_per_class, rng
+            list(vol),
+            label,
+            half_window,
+            statistics,
+            mode_decimals,
+            n_per_class,
+            rng,
+            process_feature_mode=process_feature_mode,
+            process_depth=process_depth,
+            process_size=process_size,
         )
         if X.shape[0] == 0:
             continue
