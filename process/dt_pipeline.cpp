@@ -2,8 +2,8 @@
  * @ Author: WouRaoyu
  * @ Description: Standalone, self-contained pipeline tool combining two stages
  *   of the weakly-supervised workflow into a single executable. It has no
- *   dependency on the DTGeoStudio source tree; everything it needs (windowed
- *   feature contract, descriptive statistics) is inlined below.
+ *   dependency on the DTGeoStudio source tree; the shared infer feature
+ *   contract lives in process/contract.h.
  *
  *   Sub-commands
  *   ------------
@@ -54,6 +54,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "contract.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -77,106 +79,8 @@
 namespace py = pybind11;
 namespace fs = std::filesystem;
 
-// ===========================================================================
-// Inlined feature contract (was test/contract.h, namespace dtpipeline).
-// Keeps the train / infer feature spaces identical without pulling in any
-// project headers.
-// ===========================================================================
+// Descriptive statistics used by infer feature extraction.
 namespace dtpipeline {
-
-static const std::vector<std::string> kFeatureGrids = { "vp", "vs", "depth" };
-static const std::vector<std::string> kStatSuffixes = { "Mean", "Q25", "Median", "Q75" };
-
-struct FeatureWindow
-{
-    std::string suffix;
-    openvdb::Vec3I size;
-};
-
-inline int minBox(int value)
-{
-    return std::max(3, value);
-}
-
-inline bool isBaselineFeatureMode(const std::string& mode)
-{
-    return mode == "baseline";
-}
-
-inline bool isSupportedFeatureMode(const std::string& mode)
-{
-    return mode == "baseline" || mode == "directional_multiscale";
-}
-
-inline std::vector<std::string> featureWindowSuffixes(const std::string& mode)
-{
-    std::vector<std::string> suffixes = { "" };
-    if (!isBaselineFeatureMode(mode)) {
-        suffixes.push_back("Small");
-        suffixes.push_back("Large");
-        suffixes.push_back("Axial");
-        suffixes.push_back("Lateral");
-        suffixes.push_back("Vertical");
-    }
-    return suffixes;
-}
-
-inline std::vector<FeatureWindow> featureWindows(const openvdb::Vec3I& base,
-    const std::string& mode)
-{
-    const int sx = minBox(base.x());
-    const int sy = minBox(base.y());
-    const int sz = minBox(base.z());
-
-    std::vector<FeatureWindow> windows = {
-        { "", openvdb::Vec3I(sx, sy, sz) },
-    };
-
-    if (isBaselineFeatureMode(mode)) {
-        return windows;
-    }
-
-    const int smallX = minBox(base.x() / 2);
-    const int smallY = minBox(base.y() / 2);
-    const int smallZ = minBox(base.z() / 2);
-    const int largeX = minBox(base.x() * 2);
-    const int largeY = minBox(base.y() * 2);
-    const int largeZ = minBox(base.z() * 2);
-
-    windows.push_back({ "Small", openvdb::Vec3I(smallX, smallY, smallZ) });
-    windows.push_back({ "Large", openvdb::Vec3I(largeX, largeY, largeZ) });
-    windows.push_back({ "Axial", openvdb::Vec3I(largeX, smallY, smallZ) });
-    windows.push_back({ "Lateral", openvdb::Vec3I(smallX, largeY, smallZ) });
-    windows.push_back({ "Vertical", openvdb::Vec3I(smallX, smallY, largeZ) });
-    return windows;
-}
-
-inline std::vector<std::string> featureColumns(const std::string& mode)
-{
-    std::vector<std::string> cols;
-    for (const auto& suffix : featureWindowSuffixes(mode)) {
-        for (const auto& stat : kStatSuffixes) {
-            for (const auto& prop : kFeatureGrids) {
-                cols.push_back(prop + suffix + stat);
-            }
-        }
-    }
-
-    if (!isBaselineFeatureMode(mode)) {
-        for (const auto& prop : kFeatureGrids) {
-            cols.push_back(prop + "GradMag");
-            cols.push_back(prop + "GradX");
-            cols.push_back(prop + "GradY");
-            cols.push_back(prop + "GradZ");
-            cols.push_back(prop + "Contrast");
-        }
-    }
-    return cols;
-}
-
-// ---------------------------------------------------------------------------
-// Inlined descriptive statistics (was component/SemanticStatistic + ToolStat).
-// ---------------------------------------------------------------------------
 struct SemanticStatistic final
 {
     float mean   = 0.f; ///< Arithmetic mean
@@ -259,7 +163,8 @@ namespace infer {
 using FloatConstAccessor = openvdb::FloatGrid::ConstAccessor;
 
 static SemanticStatistic sampleStat(const FloatConstAccessor& acc,
-    const openvdb::Coord& center, const openvdb::Vec3I& size)
+    const openvdb::Coord& center, const openvdb::Vec3I& size,
+    bool highLevel = false)
 {
     SemanticStatistic stat;
 
@@ -281,9 +186,122 @@ static SemanticStatistic sampleStat(const FloatConstAccessor& acc,
         }
     }
     if (!values.empty()) {
-        dtpipeline::computeStatistic(stat, values, false);
+        dtpipeline::computeStatistic(stat, values, highLevel);
     }
     return stat;
+}
+
+struct SpatialV1Stats
+{
+    float gradMagMean = 0.f;
+    float gradMagStd = 0.f;
+    float gradMagP75 = 0.f;
+    float gradMagMax = 0.f;
+    float gradEnergyX = 0.f;
+    float gradEnergyY = 0.f;
+    float gradEnergyZ = 0.f;
+    float gradAnisoRatio = 0.f;
+    float roughnessMean = 0.f;
+    float roughnessStd = 0.f;
+    float roughnessP75 = 0.f;
+};
+
+static SpatialV1Stats sampleSpatialV1Stats(const FloatConstAccessor& acc,
+    const openvdb::Coord& center, const openvdb::Vec3I& size)
+{
+    SpatialV1Stats out;
+
+    openvdb::Vec3I halfSize = size * 0.5;
+    openvdb::Coord minCoord(center - halfSize);
+    openvdb::Coord maxCoord(minCoord + size - openvdb::Coord(1, 1, 1));
+    openvdb::CoordBBox bbox(minCoord, maxCoord);
+
+    std::vector<float> gradMags;
+    gradMags.reserve(static_cast<size_t>(size.x()) * size.y() * size.z());
+    std::vector<float> roughness;
+    roughness.reserve(static_cast<size_t>(size.x()) * size.y() * size.z());
+    std::array<double, 3> energySum = { 0.0, 0.0, 0.0 };
+    std::array<int, 3> energyCount = { 0, 0, 0 };
+    const std::array<openvdb::Coord, 3> axes = {
+        openvdb::Coord(1, 0, 0),
+        openvdb::Coord(0, 1, 0),
+        openvdb::Coord(0, 0, 1)
+    };
+
+    for (int x = bbox.min().x(); x <= bbox.max().x(); ++x) {
+        for (int y = bbox.min().y(); y <= bbox.max().y(); ++y) {
+            for (int z = bbox.min().z(); z <= bbox.max().z(); ++z) {
+                const openvdb::Coord ijk(x, y, z);
+                std::array<float, 3> grad = { 0.f, 0.f, 0.f };
+                bool hasGradient = false;
+
+                for (size_t axis = 0; axis < axes.size(); ++axis) {
+                    const openvdb::Coord plus = ijk + axes[axis];
+                    const openvdb::Coord minus = ijk - axes[axis];
+                    if (!acc.isValueOn(plus) || !acc.isValueOn(minus)) continue;
+                    grad[axis] = 0.5f * (acc.getValue(plus) - acc.getValue(minus));
+                    energySum[axis] += static_cast<double>(grad[axis]) * grad[axis];
+                    ++energyCount[axis];
+                    hasGradient = true;
+                }
+                if (hasGradient) {
+                    gradMags.push_back(std::sqrt(
+                        grad[0] * grad[0] + grad[1] * grad[1] + grad[2] * grad[2]));
+                }
+
+                if (!acc.isValueOn(ijk)) continue;
+                bool hasSixNeighbors = true;
+                float neighborSum = 0.f;
+                for (const auto& axis : axes) {
+                    const openvdb::Coord plus = ijk + axis;
+                    const openvdb::Coord minus = ijk - axis;
+                    if (!acc.isValueOn(plus) || !acc.isValueOn(minus)) {
+                        hasSixNeighbors = false;
+                        break;
+                    }
+                    neighborSum += acc.getValue(plus) + acc.getValue(minus);
+                }
+                if (hasSixNeighbors) {
+                    const float lap = neighborSum - 6.f * acc.getValue(ijk);
+                    roughness.push_back(std::abs(lap));
+                }
+            }
+        }
+    }
+
+    if (!gradMags.empty()) {
+        SemanticStatistic gradStat;
+        dtpipeline::computeStatistic(gradStat, gradMags, true);
+        out.gradMagMean = gradStat.mean;
+        out.gradMagStd = gradStat.std;
+        out.gradMagP75 = gradStat.q75;
+        out.gradMagMax = *std::max_element(gradMags.begin(), gradMags.end());
+    }
+
+    std::array<float, 3> energies = { 0.f, 0.f, 0.f };
+    for (size_t axis = 0; axis < energies.size(); ++axis) {
+        if (energyCount[axis] > 0) {
+            energies[axis] = static_cast<float>(
+                energySum[axis] / static_cast<double>(energyCount[axis]));
+        }
+    }
+    out.gradEnergyX = energies[0];
+    out.gradEnergyY = energies[1];
+    out.gradEnergyZ = energies[2];
+    const float meanEnergy = (energies[0] + energies[1] + energies[2]) / 3.f;
+    if (meanEnergy > 1e-12f) {
+        out.gradAnisoRatio = *std::max_element(energies.begin(), energies.end())
+            / meanEnergy;
+    }
+
+    if (!roughness.empty()) {
+        SemanticStatistic roughStat;
+        dtpipeline::computeStatistic(roughStat, roughness, true);
+        out.roughnessMean = roughStat.mean;
+        out.roughnessStd = roughStat.std;
+        out.roughnessP75 = roughStat.q75;
+    }
+    return out;
 }
 
 static void appendFeatureRow(const std::array<FloatConstAccessor, 3>& accs,
@@ -294,10 +312,12 @@ static void appendFeatureRow(const std::array<FloatConstAccessor, 3>& accs,
 {
     size_t col = 0;
     std::array<SemanticStatistic, 3> base{};
+    const bool highLevel = dtpipeline::isHybridFeatureMode(featureMode)
+        || dtpipeline::isSpatialV1FeatureMode(featureMode);
     for (const auto& win : dtpipeline::featureWindows(boxSize, featureMode)) {
         std::array<SemanticStatistic, 3> stats;
         for (size_t i = 0; i < accs.size(); ++i) {
-            stats[i] = sampleStat(accs[i], center, win.size);
+            stats[i] = sampleStat(accs[i], center, win.size, highLevel);
         }
         if (win.suffix.empty()) {
             base = stats;
@@ -312,19 +332,71 @@ static void appendFeatureRow(const std::array<FloatConstAccessor, 3>& accs,
         return;
     }
 
-    for (size_t i = 0; i < accs.size(); ++i) {
-        const auto& acc = accs[i];
-        float gx = 0.5f * (acc.getValue(center + openvdb::Coord(1, 0, 0))
-            - acc.getValue(center - openvdb::Coord(1, 0, 0)));
-        float gy = 0.5f * (acc.getValue(center + openvdb::Coord(0, 1, 0))
-            - acc.getValue(center - openvdb::Coord(0, 1, 0)));
-        float gz = 0.5f * (acc.getValue(center + openvdb::Coord(0, 0, 1))
-            - acc.getValue(center - openvdb::Coord(0, 0, 1)));
-        values(row, col++) = std::sqrt(gx * gx + gy * gy + gz * gz);
-        values(row, col++) = gx;
-        values(row, col++) = gy;
-        values(row, col++) = gz;
-        values(row, col++) = base[i].iqr;
+    if (dtpipeline::isSpatialV1FeatureMode(featureMode)) {
+        for (const auto& stat : base) values(row, col++) = stat.std;
+        for (const auto& stat : base) values(row, col++) = stat.iqr;
+
+        const openvdb::Vec3I baseWindow =
+            dtpipeline::featureWindows(boxSize, featureMode).front().size;
+        for (const auto& acc : accs) {
+            const SpatialV1Stats stat =
+                sampleSpatialV1Stats(acc, center, baseWindow);
+            values(row, col++) = stat.gradMagMean;
+            values(row, col++) = stat.gradMagStd;
+            values(row, col++) = stat.gradMagP75;
+            values(row, col++) = stat.gradMagMax;
+            values(row, col++) = stat.gradEnergyX;
+            values(row, col++) = stat.gradEnergyY;
+            values(row, col++) = stat.gradEnergyZ;
+            values(row, col++) = stat.gradAnisoRatio;
+            values(row, col++) = stat.roughnessMean;
+            values(row, col++) = stat.roughnessStd;
+            values(row, col++) = stat.roughnessP75;
+        }
+        return;
+    }
+
+    if (dtpipeline::hasDirectionalFeatures(featureMode)) {
+        for (size_t i = 0; i < accs.size(); ++i) {
+            const auto& acc = accs[i];
+            float gx = 0.5f * (acc.getValue(center + openvdb::Coord(1, 0, 0))
+                - acc.getValue(center - openvdb::Coord(1, 0, 0)));
+            float gy = 0.5f * (acc.getValue(center + openvdb::Coord(0, 1, 0))
+                - acc.getValue(center - openvdb::Coord(0, 1, 0)));
+            float gz = 0.5f * (acc.getValue(center + openvdb::Coord(0, 0, 1))
+                - acc.getValue(center - openvdb::Coord(0, 0, 1)));
+            values(row, col++) = std::sqrt(gx * gx + gy * gy + gz * gz);
+            values(row, col++) = gx;
+            values(row, col++) = gy;
+            values(row, col++) = gz;
+            values(row, col++) = base[i].iqr;
+        }
+    }
+
+    if (dtpipeline::isHybridFeatureMode(featureMode)) {
+        for (const auto& stat : base) values(row, col++) = stat.std;
+        for (const auto& stat : base) values(row, col++) = stat.cv;
+        for (const auto& stat : base) values(row, col++) = stat.skew;
+        for (const auto& stat : base) values(row, col++) = stat.iqr;
+
+        std::array<int, 3> validCounts = { 0, 0, 0 };
+        const auto samples = dtpipeline::fixedSampleOffsets(boxSize);
+        for (const auto& sample : samples) {
+            for (size_t i = 0; i < accs.size(); ++i) {
+                const openvdb::Coord coord = center + sample.second;
+                if (accs[i].isValueOn(coord)) {
+                    values(row, col++) = accs[i].getValue(coord);
+                    ++validCounts[i];
+                }
+                else {
+                    values(row, col++) = base[i].median;
+                }
+            }
+        }
+        const float denom = static_cast<float>(samples.size());
+        for (const int count : validCounts) {
+            values(row, col++) = denom > 0.f ? static_cast<float>(count) / denom : 0.f;
+        }
     }
 }
 
@@ -409,8 +481,8 @@ private:
     std::shared_ptr<std::atomic<int>> mLastPct;
 };
 
-// Writes, for one model output, the soft probability of the predicted class into
-// `mProbs` and the hard class id into `mTypes`.
+// Writes, for one binary model output, the positive-class probability into
+// `mProbs` and the thresholded binary label into `mTypes`.
 class VolumePetTAssigner
 {
 public:
@@ -422,11 +494,13 @@ public:
         LeafManagerType& types,
         const PyBufferRef& values,
         const size_t numClasses,
+        const float threshold,
         const std::vector<size_t>& indexMap)
         : mProbs(probs)
         , mTypes(types)
         , mValues(values)
         , mNumClasses(numClasses)
+        , mThreshold(threshold)
         , mIndexMap(indexMap)
         , mVoxelsPerLeaf(openvdb::FloatTree::LeafNodeType::NUM_VOXELS)
         , mTrueNumbers(new size_t[mIndexMap.size()])
@@ -463,22 +537,9 @@ public:
 
             if (activeVoxels <= mVoxelsPerLeaf) {
                 for (; pit && tit; ++pit, ++tit) {
-                    size_t hard = 0;
-                    float positiveProb = 0.f;
-                    if (mNumClasses == 2) {
-                        positiveProb = mValues(index, 1);
-                        hard = positiveProb >= 0.5f ? 1 : 0;
-                    }
-                    else {
-                        size_t best = 0;
-                        float bestProb = mValues(index, 0);
-                        for (size_t c = 1; c < mNumClasses; ++c) {
-                            float p = mValues(index, c);
-                            if (p > bestProb) { bestProb = p; best = c; }
-                        }
-                        positiveProb = bestProb;
-                        hard = best;
-                    }
+                    const float positiveProb =
+                        mNumClasses > 1 ? mValues(index, 1) : 0.f;
+                    const size_t hard = positiveProb >= mThreshold ? 1 : 0;
                     pit.setValue(positiveProb);
                     tit.setValue(static_cast<float>(hard));
                     if (hard != 0) {
@@ -498,6 +559,7 @@ private:
     LeafManagerType& mTypes;
     const PyBufferRef& mValues;
     const size_t mNumClasses;
+    const float mThreshold;
     const std::vector<size_t>& mIndexMap;
     const openvdb::Index64 mVoxelsPerLeaf;
     std::shared_ptr<size_t> mTrueNumbers;
@@ -516,7 +578,8 @@ static void resetGridValuesAndBackground(openvdb::FloatGrid::Ptr grid, float val
 py::array_t<float> fetchStatFromVolume(const openvdb::GridPtrVec& vec,
     openvdb::Vec3I boxSize,
     const std::string& featureMode,
-    bool showProgress = true)
+    bool showProgress = true,
+    openvdb::FloatGrid::ConstPtr iterGrid = nullptr)
 {
     int fetched = 0;
     size_t totalNum = 0;
@@ -550,20 +613,21 @@ py::array_t<float> fetchStatFromVolume(const openvdb::GridPtrVec& vec,
         throw std::runtime_error("features number error");
     }
 
-    const auto featureCols = dtpipeline::featureColumns(featureMode);
-    auto result = py::array_t<float>({ totalNum, featureCols.size() });
-
-    auto buf = result.mutable_unchecked<2>();
-
     using openvdb::tree::LeafManager;
-    LeafManager<const openvdb::FloatTree> leafs(fgrids[0]->tree());
+    const openvdb::FloatTree& iterTree =
+        iterGrid ? iterGrid->tree() : fgrids[0]->tree();
+    LeafManager<const openvdb::FloatTree> leafs(iterTree);
 
     std::vector<size_t> indexMap(leafs.leafCount());
-    size_t row = 0;
+    size_t outNum = 0;
     for (size_t l = 0, L = leafs.leafCount(); l < L; ++l) {
-        indexMap[l] = row;
-        row += leafs.leaf(l).onVoxelCount();
+        indexMap[l] = outNum;
+        outNum += leafs.leaf(l).onVoxelCount();
     }
+
+    const auto featureCols = dtpipeline::featureColumns(featureMode);
+    auto result = py::array_t<float>({ outNum, featureCols.size() });
+    auto buf = result.mutable_unchecked<2>();
 
     FeatureExtractor extractor(fgrids, leafs, indexMap, boxSize, featureMode,
         buf, showProgress);
@@ -575,6 +639,7 @@ py::array_t<float> fetchStatFromVolume(const openvdb::GridPtrVec& vec,
 openvdb::GridPtrVec assignForVolumePetT(const py::list& out,
     openvdb::FloatGrid::ConstPtr org,
     const std::vector<std::string>& typeNames,
+    const std::vector<float>& thresholds,
     std::vector<float>& status)
 {
     if (out.size() != typeNames.size()) {
@@ -608,7 +673,8 @@ openvdb::GridPtrVec assignForVolumePetT(const py::list& out,
         resetGridValuesAndBackground(typeGrid, 0.f);
         LeafManager<openvdb::FloatTree> typem(typeGrid->tree());
 
-        VolumePetTAssigner assigner(probm, typem, buf, numClasses, indexMap);
+        const float threshold = i < thresholds.size() ? thresholds[i] : 0.5f;
+        VolumePetTAssigner assigner(probm, typem, buf, numClasses, threshold, indexMap);
         assigner.runParallel();
 
         status[i] = voxelCount ? float(assigner.trueNumber()) / voxelCount : 0.f;
@@ -627,15 +693,41 @@ static bool runItemInference(const fs::path& mdl, const fs::path& feat, const fs
     const openvdb::Vec3I& boxSize, const std::vector<std::string>& typeNames,
     const std::string& featureMode,
     const std::vector<std::string>& featureCols,
-    std::vector<float>& status)
+    const std::vector<float>& thresholds,
+    std::vector<float>& status,
+    const fs::path& maskPath = fs::path())
 {
     try {
         py::module script = py::module::import("model_utils");
 
         openvdb::io::File f(feat.string());
         f.open(); auto grids = f.getGrids();
+        auto fptr = openvdb::gridPtrCast<openvdb::FloatGrid>(grids->front());
 
-        py::array_t<float> input = fetchStatFromVolume(*grids, boxSize, featureMode);
+        openvdb::FloatGrid::ConstPtr iterGrid;
+        if (!maskPath.empty()) {
+            openvdb::io::File mf(maskPath.string());
+            mf.open(); auto mgrids = mf.getGrids(); mf.close();
+            openvdb::FloatGrid::Ptr maskGrid;
+            if (mgrids && !mgrids->empty()) {
+                maskGrid = openvdb::gridPtrCast<openvdb::FloatGrid>(mgrids->front());
+            }
+            if (!maskGrid) {
+                std::cerr << "Mask has no FloatGrid: " << maskPath.string() << "\n";
+                return false;
+            }
+            if (fptr) maskGrid->tree().topologyIntersection(fptr->tree());
+            if (maskGrid->activeVoxelCount() == 0) {
+                std::cout << "    mask does not overlap input; skipping\n";
+                return false;
+            }
+            iterGrid = maskGrid;
+            std::cout << "    masked to " << iterGrid->activeVoxelCount()
+                << " sampling-region voxels" << std::endl;
+        }
+
+        py::array_t<float> input =
+            fetchStatFromVolume(*grids, boxSize, featureMode, true, iterGrid);
 
         py::list strs;
         for (const auto& nm : featureCols) {
@@ -647,11 +739,11 @@ static bool runItemInference(const fs::path& mdl, const fs::path& feat, const fs
 
         std::cout << "    writing " << out.filename().string() << "..." << std::endl;
 
-        auto fptr = openvdb::gridPtrCast<openvdb::FloatGrid>(grids->front());
-
         const auto& buf = result.cast<py::list>();
 
-        auto vlms = assignForVolumePetT(buf, fptr, typeNames, status);
+        openvdb::FloatGrid::ConstPtr org =
+            iterGrid ? iterGrid : openvdb::FloatGrid::ConstPtr(fptr);
+        auto vlms = assignForVolumePetT(buf, org, typeNames, thresholds, status);
 
         openvdb::io::File output(out.string());
         output.write(vlms);
@@ -680,9 +772,11 @@ struct InferOptions
     int depth = 4;                       ///< window box size along the tunnel axis (voxels)
     int size = 32;                       ///< window box size on the cross-section (voxels)
     int startIndex = 0;                  ///< skip input_xxxx.vdb volumes whose index < this
-    std::string featureMode = "directional_multiscale";
+    std::string featureMode = "multiscale";
     std::vector<std::string> classes = { "fragment", "hardness", "watery" };
     std::set<std::string> heldOut;       ///< case ids reserved for validation
+    fs::path samplingMask;               ///< optional mask .vdb topology override
+    bool fullVolume = false;             ///< true: ignore per-case mask_<case>.vdb files
 };
 
 static std::vector<std::string> splitList(const std::string& s)
@@ -712,6 +806,14 @@ static bool parseInferArgs(int argc, char** argv, InferOptions& opt)
         else if (a == "--feature-mode") opt.featureMode = next("--feature-mode");
         else if (a == "--classes") opt.classes = splitList(next("--classes"));
         else if (a == "--held-out") { for (auto& s : splitList(next("--held-out"))) opt.heldOut.insert(s); }
+        else if (a == "--sampling-mask") opt.samplingMask = next("--sampling-mask");
+        else if (a == "--mask") {
+            const std::string mode = next("--mask");
+            if (mode == "full" || mode == "none" || mode == "all") opt.fullVolume = true;
+            else if (mode == "sampling" || mode == "interval" || mode == "mask") opt.fullVolume = false;
+            else throw std::runtime_error("--mask must be sampling or full");
+        }
+        else if (a == "--full-volume") opt.fullVolume = true;
         else std::cerr << "Unknown option ignored: " << a << "\n";
     }
     if (opt.inputDir.empty() || opt.model.empty()) return false;
@@ -747,7 +849,7 @@ static bool validateFeatureContract(const InferOptions& opt,
 {
     if (!dtpipeline::isSupportedFeatureMode(opt.featureMode)) {
         std::cerr << "Unsupported feature mode: " << opt.featureMode
-            << " (expected baseline or directional_multiscale)\n";
+            << " (expected baseline, multiscale, directional, hybrid_spatial, or spatial_v1)\n";
         return false;
     }
 
@@ -808,6 +910,65 @@ static bool validateFeatureContract(const InferOptions& opt,
     std::cout << "Feature contract OK: " << contract.string()
         << " (" << expectedColumns.size() << " features)\n";
     return true;
+}
+
+static std::vector<float> loadRecommendedThresholds(const InferOptions& opt)
+{
+    std::vector<float> thresholds(opt.classes.size(), 0.5f);
+    const fs::path contract = featureContractPath(opt.model);
+
+    nlohmann::json j;
+    try {
+        std::ifstream in(contract);
+        in >> j;
+    }
+    catch (const std::exception& e) {
+        std::cerr << "[warn] failed to read recommended thresholds from "
+            << contract.string() << ": " << e.what()
+            << "; using 0.5 for all classes\n";
+        return thresholds;
+    }
+
+    if (!j.contains("recommended_thresholds")
+        || !j["recommended_thresholds"].is_object()) {
+        std::cerr << "[warn] feature contract has no recommended_thresholds; "
+            << "using 0.5 for all classes\n";
+        return thresholds;
+    }
+
+    const auto& recs = j["recommended_thresholds"];
+    for (size_t i = 0; i < opt.classes.size(); ++i) {
+        const auto& cls = opt.classes[i];
+        if (!recs.contains(cls)) {
+            std::cerr << "[warn] no recommended threshold for class " << cls
+                << "; using 0.5\n";
+            continue;
+        }
+
+        const auto& item = recs[cls];
+        double value = 0.5;
+        if (item.is_object()) {
+            value = item.value("threshold", 0.5);
+        }
+        else if (item.is_number()) {
+            value = item.get<double>();
+        }
+
+        if (value < 0.0 || value > 1.0) {
+            std::cerr << "[warn] invalid recommended threshold for class " << cls
+                << ": " << value << "; using 0.5\n";
+            continue;
+        }
+        thresholds[i] = static_cast<float>(value);
+    }
+
+    std::cout << "Using hard-label thresholds from " << contract.string() << ": [";
+    for (size_t i = 0; i < thresholds.size(); ++i) {
+        if (i > 0) std::cout << ",";
+        std::cout << opt.classes[i] << "=" << thresholds[i];
+    }
+    std::cout << "]\n";
+    return thresholds;
 }
 
 static std::unordered_map<std::string, std::vector<float>> loadExistingStatusCache(
@@ -939,6 +1100,7 @@ static int run(const InferOptions& opt)
     if (!validateFeatureContract(opt, featureCols)) {
         return 2;
     }
+    const auto thresholds = loadRecommendedThresholds(opt);
 
     openvdb::initialize();
 
@@ -1003,8 +1165,21 @@ static int run(const InferOptions& opt)
             }
         }
         else {
+            fs::path maskPath;
+            if (!opt.fullVolume) {
+                maskPath = opt.samplingMask.empty()
+                    ? opt.inputDir / ("mask_" + caseId + ".vdb")
+                    : opt.samplingMask;
+                if (!fs::exists(maskPath)) {
+                    std::cout << "    no sampling mask " << maskPath.filename().string()
+                        << "; skipping (use --full-volume to infer the whole volume)\n";
+                    continue;
+                }
+            }
+
             bool ok = runItemInference(opt.model, fpath, outpath,
-                boxSize, opt.classes, opt.featureMode, featureCols, status);
+                boxSize, opt.classes, opt.featureMode, featureCols,
+                thresholds, status, maskPath);
             if (!ok) continue;
         }
 
@@ -1017,9 +1192,12 @@ static int run(const InferOptions& opt)
         element["classes"] = opt.classes;
         element["status"] = status;
         element["label_source"] = "pseudo_label";
-        element["probability_role"] = "soft_pseudo_label_confidence_prior";
+        element["probability_role"] = "positive_class_probability";
         element["feature_mode"] = opt.featureMode;
         element["feature_columns"] = featureCols;
+        element["thresholds"] = thresholds;
+        element["inference_region"] = opt.fullVolume
+            ? "full_volume" : "sampling_interval";
 
         jinfo.push_back(element);
 
@@ -1048,8 +1226,9 @@ static void usage(const char* prog)
         << "Usage: " << prog << " infer"
         << " --input-dir <dir> --model <pkl> [--pyhome <dir>] [--scripts <dir>]\n"
            "          [--depth 4] [--size 32] [--classes fragment,hardness,watery]\n"
-           "          [--feature-mode directional_multiscale|baseline]\n"
-           "          [--start-index 0] [--held-out caseA,caseB] [--dataset-out <json>]\n";
+           "          [--feature-mode baseline|multiscale|directional|hybrid_spatial|spatial_v1]\n"
+           "          [--start-index 0] [--held-out caseA,caseB] [--dataset-out <json>]\n"
+           "          [--mask sampling|full] [--sampling-mask <vdb>] [--full-volume]\n";
 }
 
 } // namespace infer

@@ -44,7 +44,7 @@ alongside it.
     --scripts ./build \
     --depth 4 --size 32 \
     --classes fragment,hardness,watery \
-    --feature-mode directional_multiscale \
+    --feature-mode multiscale \
     --held-out 0007,0012 \
     --dataset-out /data/volumes/dataset.json
 ```
@@ -53,6 +53,14 @@ alongside it.
   `<model-stem>.features.json` (validates feature_mode / depth / size / columns).
 - `--scripts` must point at the directory containing `model_utils.py`.
 - Each `input_<case>.vdb` produces `result_<case>.vdb` in `--input-dir`.
+- `--feature-mode` follows the shared DTGeoStudio contract:
+  `baseline`, `multiscale`, `directional`, `hybrid_spatial`, or `spatial_v1`.
+- In sampling mode, each `input_<case>.vdb` uses the matching
+  `mask_<case>.vdb` topology as the pseudo-label region; pass `--mask full` or
+  `--full-volume` to infer every active voxel, or `--sampling-mask <vdb>` to
+  point at a specific mask.
+- Hard labels use per-class `recommended_thresholds` from the feature sidecar
+  when present, with a 0.5 fallback.
 
 ### export
 
