@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "feature_mode": "origin",
+  "depth": 3,
+  "size": 24,
+  "feature_columns": [
+    "vpValue",
+    "vsValue",
+    "depthValue"
+  ],
+  "label_columns": [
+    "fragment",
+    "hardness",
+    "watery"
+  ],
+  "feature_count": 3,
+  "model_out": "E:/Datasets/CZTKOnline/KDTunnel/Dynamic/coarse_clf_origin.pkl",
+  "recommended_thresholds": {
+    "fragment": {
+      "threshold": 0.45,
+      "f1_macro": 0.7086708992897472,
+      "f1_positive": 0.7423606950269622,
+      "f1_negative": 0.6749811035525322,
+      "balanced_accuracy": 0.7081728639105689,
+      "predicted_positive_rate": 0.5855614973262032
+    },
+    "hardness": {
+      "threshold": 0.47,
+      "f1_macro": 0.8660575337705312,
+      "f1_positive": 0.934864208434533,
+      "f1_negative": 0.7972508591065293,
+      "balanced_accuracy": 0.8505821302178108,
+      "predicted_positive_rate": 0.7740641711229946
+    },
+    "watery": {
+      "threshold": 0.7,
+      "f1_macro": 0.6997814480189704,
+      "f1_positive": 0.5913134484563056,
+      "f1_negative": 0.8082494475816352,
+      "balanced_accuracy": 0.6918788628348267,
+      "predicted_positive_rate": 0.2640374331550802
+    }
+  }
+}
