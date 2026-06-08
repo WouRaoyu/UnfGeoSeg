@@ -25,6 +25,10 @@ dependencies:
   # Pin pip<24.1: newer pip (25.x/26.x) dropped the bare `linux_x86_64`
   # platform tag, so it rejects PyTorch's torch-2.1.2+cu121 wheel below.
   - pip=24.0
+  - pybind11
+  - libboost
+  - openvdb
+  - vtk
   - pip:
       # PyTorch's flat cu121 index no longer lists 2.1.2, so pin the wheel by
       # direct URL (Linux + cp311/Python 3.11). For Windows/other Python pick
