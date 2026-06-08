@@ -22,9 +22,14 @@ channels:
   - conda-forge
 dependencies:
   - python=3.11
-  - pip
+  # Pin pip<24.1: newer pip (25.x/26.x) dropped the bare `linux_x86_64`
+  # platform tag, so it rejects PyTorch's torch-2.1.2+cu121 wheel below.
+  - pip=24.0
   - pip:
-      - torch --index-url https://download.pytorch.org/whl/cu121
+      # PyTorch's flat cu121 index no longer lists 2.1.2, so pin the wheel by
+      # direct URL (Linux + cp311/Python 3.11). For Windows/other Python pick
+      # the matching wheel from https://download.pytorch.org/whl/cu121/torch/
+      - https://download.pytorch.org/whl/cu121/torch-2.1.2%2Bcu121-cp311-cp311-linux_x86_64.whl
       - nnunetv2==2.5.2
       - blosc2
       - scikit-learn==1.6.0
