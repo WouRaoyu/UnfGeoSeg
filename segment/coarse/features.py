@@ -122,6 +122,10 @@ def _fixed_sample_offsets(base: Sequence[int]) -> List[Tuple[int, int, int]]:
     ]
 
 
+def _value_sample_offsets(base: Sequence[int]) -> List[Tuple[int, int, int]]:
+    return [offset for _name, offset in process_contract.value_sample_offsets(base)]
+
+
 def _directional_features(vol: np.ndarray, base_iqr: np.ndarray) -> List[np.ndarray]:
     gz, gy, gx = np.gradient(vol.astype(np.float32, copy=False))
     grad_mag = np.sqrt(gz * gz + gy * gy + gx * gx).astype(np.float32)
@@ -131,6 +135,88 @@ def _directional_features(vol: np.ndarray, base_iqr: np.ndarray) -> List[np.ndar
         gy.astype(np.float32),
         gx.astype(np.float32),
         base_iqr.astype(np.float32),
+    ]
+
+
+def _spatial_features(vol: np.ndarray, base_size: Sequence[int]) -> List[np.ndarray]:
+    vol = vol.astype(np.float32, copy=False)
+    gz, gy, gx = np.gradient(vol)
+    grad_mag = np.sqrt(gz * gz + gy * gy + gx * gx).astype(np.float32)
+    energy = [gx * gx, gy * gy, gz * gz]
+    energy_mean = [_window_mean(item.astype(np.float32), base_size) for item in energy]
+    mean_energy = (energy_mean[0] + energy_mean[1] + energy_mean[2]) / 3.0
+    aniso = np.divide(
+        np.maximum.reduce(energy_mean),
+        mean_energy,
+        out=np.zeros_like(mean_energy, dtype=np.float32),
+        where=mean_energy > 1.0e-12,
+    )
+    lap = np.abs(
+        ndimage.convolve(
+            vol,
+            np.asarray(
+                [
+                    [[0, 0, 0], [0, 1, 0], [0, 0, 0]],
+                    [[0, 1, 0], [1, -6, 1], [0, 1, 0]],
+                    [[0, 0, 0], [0, 1, 0], [0, 0, 0]],
+                ],
+                dtype=np.float32,
+            ),
+            mode="nearest",
+        )
+    ).astype(np.float32)
+    grad_stats = _window_stats(grad_mag, base_size)
+    rough_stats = _window_stats(lap, base_size)
+    return [
+        grad_stats["mean"],
+        grad_stats["std"],
+        grad_stats["q75"],
+        ndimage.maximum_filter(grad_mag, size=base_size, mode="nearest").astype(np.float32),
+        energy_mean[0].astype(np.float32),
+        energy_mean[1].astype(np.float32),
+        energy_mean[2].astype(np.float32),
+        aniso.astype(np.float32),
+        rough_stats["mean"],
+        rough_stats["std"],
+        rough_stats["q75"],
+    ]
+
+
+def _physical_feature_volumes(vp: np.ndarray, vs: np.ndarray, depth_mean: np.ndarray) -> List[np.ndarray]:
+    vp = vp.astype(np.float32, copy=False)
+    vs = vs.astype(np.float32, copy=False)
+    valid = np.isfinite(vp) & np.isfinite(vs) & (vp > 0.0) & (vs > 0.0)
+    density = np.where(valid, 700.0 * np.power(vp * vs, 0.08), 0.0).astype(np.float32)
+    ratio = np.divide(vp, vs, out=np.zeros_like(vp, dtype=np.float32), where=valid)
+    vp2 = vp * vp
+    vs2 = vs * vs
+    denom = 2.0 * (vp2 - vs2)
+    poisson_valid = valid & (vp > vs) & (np.abs(denom) > 1.0e-12)
+    poisson = np.divide(
+        vp2 - 2.0 * vs2,
+        denom,
+        out=np.zeros_like(vp, dtype=np.float32),
+        where=poisson_valid,
+    )
+    poisson = np.clip(poisson, 0.0, 0.49).astype(np.float32)
+    pa_to_gpa = np.float32(1.0e-9)
+    shear = np.maximum(0.0, density * vs2) * pa_to_gpa
+    bulk = np.maximum(0.0, density * (vp2 - (4.0 / 3.0) * vs2)) * pa_to_gpa
+    youngs = np.maximum(0.0, 2.0 * density * vs2 * (1.0 + poisson)) * pa_to_gpa
+    lambda_mod = np.maximum(0.0, density * (vp2 - 2.0 * vs2)) * pa_to_gpa
+    p_wave = np.maximum(0.0, density * vp2) * pa_to_gpa
+    return [
+        vp,
+        vs,
+        depth_mean.astype(np.float32),
+        density,
+        ratio.astype(np.float32),
+        poisson,
+        shear.astype(np.float32),
+        bulk.astype(np.float32),
+        youngs.astype(np.float32),
+        lambda_mod.astype(np.float32),
+        p_wave.astype(np.float32),
     ]
 
 
@@ -144,24 +230,51 @@ def compute_process_feature_volumes(
 
     This is intended for Python-side experiments that need to compare against
     the standalone VDB workflow. It mirrors the contract column order and the
-    common baseline/multiscale/directional/hybrid_spatial statistics.
+    common baseline/multiscale/directional/enhanced/spatial statistics.
     """
-    if process_contract.is_spatial_v1_feature_mode(feature_mode):
-        raise NotImplementedError(
-            "Python experiments do not implement process spatial_v1 features yet"
-        )
     if len(channel_volumes) != len(process_contract.FEATURE_GRIDS):
         raise ValueError(
             "process feature contract requires channels [vp, vs, depth]"
         )
 
     base = (int(depth), int(size), int(size))
+    vp, vs, depth_vol = [vol.astype(np.float32, copy=False) for vol in channel_volumes]
+    stat_volumes = [vp, vs]
+    base_window = process_contract.feature_windows(base, feature_mode)[0].size
+    depth_mean = _window_mean(depth_vol, base_window)
+
+    if process_contract.is_mean_feature_mode(feature_mode):
+        return np.stack(
+            [_window_mean(vol, base_window) for vol in channel_volumes],
+            axis=0,
+        ).astype(np.float32, copy=False)
+
+    if process_contract.is_origin_feature_mode(feature_mode):
+        return np.stack([vp, vs, depth_vol], axis=0).astype(np.float32, copy=False)
+
+    if process_contract.is_physical_feature_mode(feature_mode):
+        return np.stack(
+            _physical_feature_volumes(vp, vs, depth_mean),
+            axis=0,
+        ).astype(np.float32, copy=False)
+
+    if process_contract.is_random_feature_mode(feature_mode):
+        return np.stack([vp, vs, depth_mean], axis=0).astype(np.float32, copy=False)
+
+    if process_contract.is_values_feature_mode(feature_mode):
+        feats = []
+        for offset in _value_sample_offsets(base):
+            for vol in stat_volumes:
+                feats.append(_sample_nearest(vol, offset))
+        feats.append(depth_mean)
+        return np.stack(feats, axis=0).astype(np.float32, copy=False)
+
     windows = process_contract.feature_windows(base, feature_mode)
     stats_by_window = []
     feats: List[np.ndarray] = []
 
     for win in windows:
-        per_channel = [_window_stats(vol, win.size) for vol in channel_volumes]
+        per_channel = [_window_stats(vol, win.size) for vol in stat_volumes]
         stats_by_window.append(per_channel)
         for stat in PROCESS_STAT_ORDER:
             for stats in per_channel:
@@ -170,18 +283,22 @@ def compute_process_feature_volumes(
     base_stats = stats_by_window[0]
 
     if process_contract.has_directional_features(feature_mode):
-        for vol, stats in zip(channel_volumes, base_stats):
+        for vol, stats in zip(stat_volumes, base_stats):
             feats.extend(_directional_features(vol, stats["iqr"]))
 
     if process_contract.is_hybrid_feature_mode(feature_mode):
-        for stat in ("std", "cv", "skew", "iqr"):
+        for stat in ("std", "skew"):
             for stats in base_stats:
                 feats.append(stats[stat])
-        for offset in _fixed_sample_offsets(base):
-            for vol in channel_volumes:
-                feats.append(_sample_nearest(vol, offset))
-        for _vol in channel_volumes:
-            feats.append(np.ones_like(channel_volumes[0], dtype=np.float32))
+
+    if process_contract.is_spatial_v1_feature_mode(feature_mode):
+        for stat in ("std", "iqr"):
+            for stats in base_stats:
+                feats.append(stats[stat])
+        for vol in stat_volumes:
+            feats.extend(_spatial_features(vol, base_window))
+
+    feats.append(depth_mean)
 
     return np.stack(feats, axis=0).astype(np.float32, copy=False)
 

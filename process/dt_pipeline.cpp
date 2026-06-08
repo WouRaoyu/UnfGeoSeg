@@ -13,8 +13,11 @@
  *           trained model through the embedded Python interpreter
  *           (model_utils.execProb), and writes, per unfavorable-geology type, a
  *           soft probability grid (`prob_<type>`) plus a hard label grid
- *           (`<type>`) to `result_*.vdb` in the same folder. Per-volume metadata
- *           is recorded in dataset.json for the export stage.
+ *           (`<type>`) to `result_*.vdb` in the same folder. Masked inference
+ *           uses the sample-stage `sampling_<mode>.json` manifest when
+ *           provided, with legacy `mask_*.vdb` support kept for flat datasets.
+ *           Per-volume metadata is recorded in dataset.json for the export
+ *           stage.
  *
  *   export  Converts the inference result volumes (.vdb) to a nnU-Net / MONAI
  *           style nii.gz dataset for the downstream fine-grained 3D-TransUNet.
@@ -312,35 +315,113 @@ static void appendFeatureRow(const std::array<FloatConstAccessor, 3>& accs,
 {
     size_t col = 0;
     std::array<SemanticStatistic, 3> base{};
+    if (dtpipeline::isMeanFeatureMode(featureMode)) {
+        const openvdb::Vec3I baseWindow =
+            dtpipeline::featureWindows(boxSize, featureMode).front().size;
+        for (size_t i = 0; i < accs.size(); ++i) {
+            base[i] = sampleStat(accs[i], center, baseWindow, false);
+            values(row, col++) = base[i].mean;
+        }
+        return;
+    }
+
+    if (dtpipeline::isPointValueFeatureMode(featureMode)) {
+        std::array<float, 3> pointValues = { 0.f, 0.f, 0.f };
+        for (size_t i = 0; i < accs.size(); ++i) {
+            pointValues[i] = accs[i].isValueOn(center)
+                ? accs[i].getValue(center)
+                : 0.f;
+        }
+        const bool useDepthMean = dtpipeline::isPhysicalFeatureMode(featureMode)
+            || dtpipeline::isRandomFeatureMode(featureMode);
+        if (useDepthMean) {
+            const openvdb::Vec3I baseWindow =
+                dtpipeline::featureWindows(boxSize, featureMode).front().size;
+            base[2] = sampleStat(accs[2], center, baseWindow, false);
+        }
+        if (dtpipeline::isPhysicalFeatureMode(featureMode)) {
+            const auto physical = dtpipeline::physicalFeatureValues(
+                pointValues[0], pointValues[1], base[2].mean);
+            for (float value : physical) {
+                values(row, col++) = value;
+            }
+        }
+        else {
+            values(row, col++) = pointValues[0];
+            values(row, col++) = pointValues[1];
+            values(row, col++) = useDepthMean ? base[2].mean : pointValues[2];
+        }
+        return;
+    }
+
+    if (dtpipeline::isValuesFeatureMode(featureMode)) {
+        std::array<float, 3> centerValues = { 0.f, 0.f, 0.f };
+        for (size_t i = 0; i < accs.size(); ++i) {
+            if (accs[i].isValueOn(center)) {
+                centerValues[i] = accs[i].getValue(center);
+            }
+        }
+        const openvdb::Vec3I baseWindow =
+            dtpipeline::featureWindows(boxSize, featureMode).front().size;
+        base[2] = sampleStat(accs[2], center, baseWindow, false);
+
+        const auto samples = dtpipeline::valueSampleOffsets(boxSize);
+        for (const auto& sample : samples) {
+            for (size_t i = 0; i < dtpipeline::kStatFeatureGrids.size(); ++i) {
+                const openvdb::Coord coord = center + sample.second;
+                values(row, col++) = accs[i].isValueOn(coord)
+                    ? accs[i].getValue(coord)
+                    : centerValues[i];
+            }
+        }
+        values(row, col++) = base[2].mean;
+        return;
+    }
+
     const bool highLevel = dtpipeline::isHybridFeatureMode(featureMode)
         || dtpipeline::isSpatialV1FeatureMode(featureMode);
     for (const auto& win : dtpipeline::featureWindows(boxSize, featureMode)) {
+        const bool isBase = win.suffix.empty();
         std::array<SemanticStatistic, 3> stats;
-        for (size_t i = 0; i < accs.size(); ++i) {
-            stats[i] = sampleStat(accs[i], center, win.size, highLevel);
+        for (size_t i = 0; i < dtpipeline::kStatFeatureGrids.size(); ++i) {
+            stats[i] = sampleStat(accs[i], center, win.size, highLevel && isBase);
         }
-        if (win.suffix.empty()) {
+        if (isBase) {
+            stats[2] = sampleStat(accs[2], center, win.size, false);
             base = stats;
         }
-        for (const auto& stat : stats) values(row, col++) = stat.mean;
-        for (const auto& stat : stats) values(row, col++) = stat.q25;
-        for (const auto& stat : stats) values(row, col++) = stat.median;
-        for (const auto& stat : stats) values(row, col++) = stat.q75;
+        for (size_t i = 0; i < dtpipeline::kStatFeatureGrids.size(); ++i) {
+            values(row, col++) = stats[i].mean;
+        }
+        for (size_t i = 0; i < dtpipeline::kStatFeatureGrids.size(); ++i) {
+            values(row, col++) = stats[i].q25;
+        }
+        for (size_t i = 0; i < dtpipeline::kStatFeatureGrids.size(); ++i) {
+            values(row, col++) = stats[i].median;
+        }
+        for (size_t i = 0; i < dtpipeline::kStatFeatureGrids.size(); ++i) {
+            values(row, col++) = stats[i].q75;
+        }
     }
 
     if (dtpipeline::isBaselineFeatureMode(featureMode)) {
+        values(row, col++) = base[2].mean;
         return;
     }
 
     if (dtpipeline::isSpatialV1FeatureMode(featureMode)) {
-        for (const auto& stat : base) values(row, col++) = stat.std;
-        for (const auto& stat : base) values(row, col++) = stat.iqr;
+        for (size_t i = 0; i < dtpipeline::kStatFeatureGrids.size(); ++i) {
+            values(row, col++) = base[i].std;
+        }
+        for (size_t i = 0; i < dtpipeline::kStatFeatureGrids.size(); ++i) {
+            values(row, col++) = base[i].iqr;
+        }
 
         const openvdb::Vec3I baseWindow =
             dtpipeline::featureWindows(boxSize, featureMode).front().size;
-        for (const auto& acc : accs) {
+        for (size_t i = 0; i < dtpipeline::kStatFeatureGrids.size(); ++i) {
             const SpatialV1Stats stat =
-                sampleSpatialV1Stats(acc, center, baseWindow);
+                sampleSpatialV1Stats(accs[i], center, baseWindow);
             values(row, col++) = stat.gradMagMean;
             values(row, col++) = stat.gradMagStd;
             values(row, col++) = stat.gradMagP75;
@@ -353,11 +434,12 @@ static void appendFeatureRow(const std::array<FloatConstAccessor, 3>& accs,
             values(row, col++) = stat.roughnessStd;
             values(row, col++) = stat.roughnessP75;
         }
+        values(row, col++) = base[2].mean;
         return;
     }
 
     if (dtpipeline::hasDirectionalFeatures(featureMode)) {
-        for (size_t i = 0; i < accs.size(); ++i) {
+        for (size_t i = 0; i < dtpipeline::kStatFeatureGrids.size(); ++i) {
             const auto& acc = accs[i];
             float gx = 0.5f * (acc.getValue(center + openvdb::Coord(1, 0, 0))
                 - acc.getValue(center - openvdb::Coord(1, 0, 0)));
@@ -374,30 +456,14 @@ static void appendFeatureRow(const std::array<FloatConstAccessor, 3>& accs,
     }
 
     if (dtpipeline::isHybridFeatureMode(featureMode)) {
-        for (const auto& stat : base) values(row, col++) = stat.std;
-        for (const auto& stat : base) values(row, col++) = stat.cv;
-        for (const auto& stat : base) values(row, col++) = stat.skew;
-        for (const auto& stat : base) values(row, col++) = stat.iqr;
-
-        std::array<int, 3> validCounts = { 0, 0, 0 };
-        const auto samples = dtpipeline::fixedSampleOffsets(boxSize);
-        for (const auto& sample : samples) {
-            for (size_t i = 0; i < accs.size(); ++i) {
-                const openvdb::Coord coord = center + sample.second;
-                if (accs[i].isValueOn(coord)) {
-                    values(row, col++) = accs[i].getValue(coord);
-                    ++validCounts[i];
-                }
-                else {
-                    values(row, col++) = base[i].median;
-                }
-            }
+        for (size_t i = 0; i < dtpipeline::kStatFeatureGrids.size(); ++i) {
+            values(row, col++) = base[i].std;
         }
-        const float denom = static_cast<float>(samples.size());
-        for (const int count : validCounts) {
-            values(row, col++) = denom > 0.f ? static_cast<float>(count) / denom : 0.f;
+        for (size_t i = 0; i < dtpipeline::kStatFeatureGrids.size(); ++i) {
+            values(row, col++) = base[i].skew;
         }
     }
+    values(row, col++) = base[2].mean;
 }
 
 namespace {
@@ -689,13 +755,62 @@ openvdb::GridPtrVec assignForVolumePetT(const py::list& out,
     return grids;
 }
 
+struct SamplingMask
+{
+    bool valid = false;
+    std::vector<int> axisIndices;
+    int centerY = 0;
+    int centerZ = 0;
+    openvdb::Vec3I baseWindow{ 0, 0, 0 };
+};
+
+struct SamplingIndex
+{
+    openvdb::Vec3I baseWindow{ 0, 0, 0 };
+    std::unordered_map<std::string, nlohmann::json> items;
+};
+
+static SamplingIndex loadSamplingIndex(const fs::path& path)
+{
+    SamplingIndex idx;
+    std::ifstream in(path);
+    if (!in) {
+        std::cerr << "Cannot open sampling index: " << path.string() << "\n";
+        return idx;
+    }
+    nlohmann::json j;
+    try {
+        in >> j;
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Failed to parse sampling index " << path.string()
+            << ": " << e.what() << "\n";
+        return idx;
+    }
+    if (j.contains("base_window") && j["base_window"].is_array()
+        && j["base_window"].size() == 3) {
+        idx.baseWindow = openvdb::Vec3I(j["base_window"][0].get<int>(),
+            j["base_window"][1].get<int>(), j["base_window"][2].get<int>());
+    }
+    if (j.contains("items")) {
+        for (const auto& item : j["items"]) {
+            if (!item.contains("input")) continue;
+            idx.items.emplace(item["input"].get<std::string>(), item);
+        }
+    }
+    std::cout << "Loaded sampling index: " << idx.items.size()
+        << " item(s) from " << path.string() << "\n";
+    return idx;
+}
+
 static bool runItemInference(const fs::path& mdl, const fs::path& feat, const fs::path& out,
     const openvdb::Vec3I& boxSize, const std::vector<std::string>& typeNames,
     const std::string& featureMode,
     const std::vector<std::string>& featureCols,
     const std::vector<float>& thresholds,
     std::vector<float>& status,
-    const fs::path& maskPath = fs::path())
+    const SamplingMask& mask = SamplingMask{},
+    const fs::path& legacyMaskPath = fs::path())
 {
     try {
         py::module script = py::module::import("model_utils");
@@ -705,15 +820,37 @@ static bool runItemInference(const fs::path& mdl, const fs::path& feat, const fs
         auto fptr = openvdb::gridPtrCast<openvdb::FloatGrid>(grids->front());
 
         openvdb::FloatGrid::ConstPtr iterGrid;
-        if (!maskPath.empty()) {
-            openvdb::io::File mf(maskPath.string());
+        if (mask.valid) {
+            if (!fptr) {
+                std::cerr << "Input has no FloatGrid: " << feat.string() << "\n";
+                return false;
+            }
+            auto maskGrid = openvdb::FloatGrid::create(0.f);
+            maskGrid->setTransform(fptr->transform().copy());
+            const openvdb::Coord half(mask.baseWindow.x() / 2,
+                mask.baseWindow.y() / 2, mask.baseWindow.z() / 2);
+            for (int x : mask.axisIndices) {
+                const openvdb::Coord c(x, mask.centerY, mask.centerZ);
+                maskGrid->fill(openvdb::CoordBBox(c - half, c + half), 1.f, true);
+            }
+            maskGrid->tree().topologyIntersection(fptr->tree());
+            if (maskGrid->activeVoxelCount() == 0) {
+                std::cout << "    sampling region does not overlap input; skipping\n";
+                return false;
+            }
+            iterGrid = maskGrid;
+            std::cout << "    masked to " << iterGrid->activeVoxelCount()
+                << " sampling-region voxels" << std::endl;
+        }
+        else if (!legacyMaskPath.empty()) {
+            openvdb::io::File mf(legacyMaskPath.string());
             mf.open(); auto mgrids = mf.getGrids(); mf.close();
             openvdb::FloatGrid::Ptr maskGrid;
             if (mgrids && !mgrids->empty()) {
                 maskGrid = openvdb::gridPtrCast<openvdb::FloatGrid>(mgrids->front());
             }
             if (!maskGrid) {
-                std::cerr << "Mask has no FloatGrid: " << maskPath.string() << "\n";
+                std::cerr << "Mask has no FloatGrid: " << legacyMaskPath.string() << "\n";
                 return false;
             }
             if (fptr) maskGrid->tree().topologyIntersection(fptr->tree());
@@ -775,8 +912,10 @@ struct InferOptions
     std::string featureMode = "multiscale";
     std::vector<std::string> classes = { "fragment", "hardness", "watery" };
     std::set<std::string> heldOut;       ///< case ids reserved for validation
+    fs::path samplingIndex;              ///< sampling-index manifest from the sample stage
     fs::path samplingMask;               ///< optional mask .vdb topology override
     bool fullVolume = false;             ///< true: ignore per-case mask_<case>.vdb files
+    bool forceUpdate = false;            ///< true: overwrite existing result_*.vdb
 };
 
 static std::vector<std::string> splitList(const std::string& s)
@@ -806,6 +945,7 @@ static bool parseInferArgs(int argc, char** argv, InferOptions& opt)
         else if (a == "--feature-mode") opt.featureMode = next("--feature-mode");
         else if (a == "--classes") opt.classes = splitList(next("--classes"));
         else if (a == "--held-out") { for (auto& s : splitList(next("--held-out"))) opt.heldOut.insert(s); }
+        else if (a == "--sampling-index") opt.samplingIndex = next("--sampling-index");
         else if (a == "--sampling-mask") opt.samplingMask = next("--sampling-mask");
         else if (a == "--mask") {
             const std::string mode = next("--mask");
@@ -814,6 +954,7 @@ static bool parseInferArgs(int argc, char** argv, InferOptions& opt)
             else throw std::runtime_error("--mask must be sampling or full");
         }
         else if (a == "--full-volume") opt.fullVolume = true;
+        else if (a == "--force-update") opt.forceUpdate = true;
         else std::cerr << "Unknown option ignored: " << a << "\n";
     }
     if (opt.inputDir.empty() || opt.model.empty()) return false;
@@ -849,7 +990,8 @@ static bool validateFeatureContract(const InferOptions& opt,
 {
     if (!dtpipeline::isSupportedFeatureMode(opt.featureMode)) {
         std::cerr << "Unsupported feature mode: " << opt.featureMode
-            << " (expected baseline, multiscale, directional, hybrid_spatial, or spatial_v1)\n";
+            << " (expected baseline, multiscale, directional, enhanced, spatial,"
+            << " values, mean, origin, physical, or random)\n";
         return false;
     }
 
@@ -1102,6 +1244,16 @@ static int run(const InferOptions& opt)
     }
     const auto thresholds = loadRecommendedThresholds(opt);
 
+    SamplingIndex samplingIndex;
+    if (!opt.fullVolume && !opt.samplingIndex.empty()) {
+        samplingIndex = loadSamplingIndex(opt.samplingIndex);
+        if (samplingIndex.items.empty()) {
+            std::cerr << "Sampling index is empty or unreadable: "
+                << opt.samplingIndex.string() << "\n";
+            return 2;
+        }
+    }
+
     openvdb::initialize();
 
     // Configure and launch the embedded Python interpreter.
@@ -1151,7 +1303,7 @@ static int run(const InferOptions& opt)
         try { iid = std::stoi(caseId); } catch (...) {}
 
         std::vector<float> status(opt.classes.size(), 0.f);
-        if (fs::exists(outpath)) {
+        if (fs::exists(outpath) && !opt.forceUpdate) {
             std::cout << "    skipping existing " << outpath.filename().string() << std::endl;
             if (!readExistingResultStatus(outpath, opt.classes, status)) {
                 const auto statusItr = existingStatus.find(pathToUtf8(outpath));
@@ -1165,21 +1317,44 @@ static int run(const InferOptions& opt)
             }
         }
         else {
-            fs::path maskPath;
+            SamplingMask mask;
+            fs::path legacyMaskPath;
             if (!opt.fullVolume) {
-                maskPath = opt.samplingMask.empty()
-                    ? opt.inputDir / ("mask_" + caseId + ".vdb")
-                    : opt.samplingMask;
-                if (!fs::exists(maskPath)) {
-                    std::cout << "    no sampling mask " << maskPath.filename().string()
-                        << "; skipping (use --full-volume to infer the whole volume)\n";
-                    continue;
+                if (!samplingIndex.items.empty()) {
+                    auto itr = samplingIndex.items.find(pathToUtf8(fpath));
+                    if (itr == samplingIndex.items.end()) {
+                        std::cout << "    no sampling-index entry; skipping "
+                            "(use --full-volume to infer the whole volume)\n";
+                        continue;
+                    }
+                    const auto& item = itr->second;
+                    mask.valid = true;
+                    mask.baseWindow = samplingIndex.baseWindow;
+                    if (mask.baseWindow.x() <= 0 || mask.baseWindow.y() <= 0
+                        || mask.baseWindow.z() <= 0) {
+                        mask.baseWindow =
+                            dtpipeline::featureWindows(opt.depth, opt.size,
+                                opt.featureMode).front().size;
+                    }
+                    mask.centerY = item.value("center_y", 0);
+                    mask.centerZ = item.value("center_z", 0);
+                    mask.axisIndices = item.value("axis_indices", std::vector<int>{});
+                }
+                else {
+                    legacyMaskPath = opt.samplingMask.empty()
+                        ? opt.inputDir / ("mask_" + caseId + ".vdb")
+                        : opt.samplingMask;
+                    if (!fs::exists(legacyMaskPath)) {
+                        std::cout << "    no sampling-index or sampling mask; skipping "
+                            "(use --sampling-index or --full-volume)\n";
+                        continue;
+                    }
                 }
             }
 
             bool ok = runItemInference(opt.model, fpath, outpath,
                 boxSize, opt.classes, opt.featureMode, featureCols,
-                thresholds, status, maskPath);
+                thresholds, status, mask, legacyMaskPath);
             if (!ok) continue;
         }
 
@@ -1226,9 +1401,10 @@ static void usage(const char* prog)
         << "Usage: " << prog << " infer"
         << " --input-dir <dir> --model <pkl> [--pyhome <dir>] [--scripts <dir>]\n"
            "          [--depth 4] [--size 32] [--classes fragment,hardness,watery]\n"
-           "          [--feature-mode baseline|multiscale|directional|hybrid_spatial|spatial_v1]\n"
+           "          [--feature-mode baseline|multiscale|directional|enhanced|spatial|values|mean|origin|physical|random]\n"
            "          [--start-index 0] [--held-out caseA,caseB] [--dataset-out <json>]\n"
-           "          [--mask sampling|full] [--sampling-mask <vdb>] [--full-volume]\n";
+           "          [--mask sampling|full] [--sampling-index <json>] [--sampling-mask <vdb>]\n"
+           "          [--full-volume] [--force-update]\n";
 }
 
 } // namespace infer

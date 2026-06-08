@@ -44,7 +44,7 @@ sampling:
 # sampling.statistics list above.
 # ---------------------------------------------------------------------------
 process:
-  feature_mode: baseline         # baseline, multiscale, directional, hybrid_spatial
+  feature_mode: baseline         # baseline, multiscale, directional, enhanced, spatial, values, mean, origin, physical, random
   depth: 4
   size: 64
 

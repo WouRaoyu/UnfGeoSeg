@@ -70,11 +70,16 @@ Supported feature modes are defined in `process/contract.h` and mirrored by
 
 | Mode | Columns | Notes |
 |---|---:|---|
-| `baseline` | 12 | Base window statistics for `vp`, `vs`, `depth`: mean, Q25, median, Q75. |
-| `multiscale` | 36 | Baseline plus small and large windows. |
-| `directional` | 87 | Multiscale plus axial/lateral/vertical windows and gradient/contrast features. |
-| `hybrid_spatial` | 72 | Multiscale plus distribution stats, fixed samples, and valid-sample ratios. |
-| `spatial_v1` | 51 | Base stats plus local gradient energy, anisotropy, and roughness features. |
+| `baseline` | 9 | Base window statistics for `vp`/`vs` plus `depthMean`. |
+| `multiscale` | 25 | Baseline plus small and large `vp`/`vs` windows. |
+| `directional` | 59 | Multiscale plus axial/lateral/vertical windows and gradient/contrast features. |
+| `enhanced` | 29 | Multiscale plus base-window `Std`/`Skew` for `vp`/`vs`. |
+| `spatial` | 35 | Base stats plus local gradient energy, anisotropy, and roughness features. |
+| `values` | 55 | 3x3x3 point samples for `vp`/`vs` plus `depthMean`. |
+| `mean` | 3 | Window means for `vp`, `vs`, and `depth`. |
+| `origin` | 3 | Center voxel values for `vp`, `vs`, and `depth`. |
+| `physical` | 11 | Center `vp`/`vs`, `depthMean`, and derived elastic properties. |
+| `random` | 3 | Center `vp`/`vs` plus `depthMean`. |
 
 Hard labels are thresholded per class using `recommended_thresholds` from the
 sidecar. Missing or invalid thresholds fall back to `0.5`.
@@ -113,6 +118,9 @@ Common options:
 - `--held-out caseA,caseB`: cases exported later to `imagesTs/labelsTs`.
 - `--dataset-out <json>`: default `<input-dir>/dataset.json`.
 - `--start-index <n>`: skip numeric case ids below `n`, useful for resuming.
+- `--sampling-index <json>`: sampling manifest produced by the sample stage;
+  preferred for masked inference.
+- `--force-update`: recompute existing `result_<case>.vdb` files.
 
 ### Input VDBs
 
@@ -122,15 +130,24 @@ Each `input_<case>.vdb` must contain active FloatGrids named:
 - `vs`
 - `depth`
 
-By default, inference only runs on a sampling mask:
+By default, inference only runs on the trained sampling region. The preferred
+protocol is the sample-stage manifest:
+
+- `--sampling-index <sampling_<mode>.json>`
+
+The manifest stores each `input_<case>.vdb` path, the sampled axis voxels, and
+the cross-section center; `infer` rebuilds the mask in memory and writes only
+that region.
+
+For older flat datasets, VDB masks are still supported:
 
 - case-local mask: `mask_<case>.vdb` in `--input-dir`
 - shared override: `--sampling-mask <mask.vdb>`
 
-If no mask is present, the case is skipped. Use `--mask full`, `--mask none`,
-`--mask all`, or `--full-volume` to infer every active voxel in the input
-volume. `--mask sampling`, `--mask interval`, and `--mask mask` select the
-sampling-mask behavior.
+If neither a manifest entry nor a mask is present, the case is skipped. Use
+`--mask full`, `--mask none`, `--mask all`, or `--full-volume` to infer every
+active voxel in the input volume. `--mask sampling`, `--mask interval`, and
+`--mask mask` select masked inference.
 
 ### Model Formats
 

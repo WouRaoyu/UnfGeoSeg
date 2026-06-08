@@ -162,16 +162,13 @@ def test_process_contract_baseline_columns_and_features():
     assert cols == [
         "vpMean",
         "vsMean",
-        "depthMean",
         "vpQ25",
         "vsQ25",
-        "depthQ25",
         "vpMedian",
         "vsMedian",
-        "depthMedian",
         "vpQ75",
         "vsQ75",
-        "depthQ75",
+        "depthMean",
     ]
 
     vols = [np.ones((3, 3, 3), dtype=np.float32) * i for i in (1, 2, 3)]
@@ -181,7 +178,22 @@ def test_process_contract_baseline_columns_and_features():
     assert feat.shape == (len(cols), 3, 3, 3)
     assert np.allclose(feat[0], 1.0)
     assert np.allclose(feat[1], 2.0)
-    assert np.allclose(feat[2], 3.0)
+    assert np.allclose(feat[-1], 3.0)
+
+
+def test_process_contract_new_modes_match_reference_counts():
+    contract = pytest.importorskip("segment.process_contract")
+
+    assert len(contract.feature_columns("mean")) == 3
+    assert len(contract.feature_columns("origin")) == 3
+    assert len(contract.feature_columns("random")) == 3
+    assert len(contract.feature_columns("physical")) == 11
+    assert len(contract.feature_columns("values")) == 55
+    assert len(contract.feature_columns("baseline")) == 9
+    assert len(contract.feature_columns("multiscale")) == 25
+    assert len(contract.feature_columns("directional")) == 59
+    assert len(contract.feature_columns("enhanced")) == 29
+    assert len(contract.feature_columns("spatial")) == 35
 
 
 if __name__ == "__main__":
