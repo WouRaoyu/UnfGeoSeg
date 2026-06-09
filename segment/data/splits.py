@@ -19,7 +19,7 @@ reserved as independent validation evidence) -- callers pass them separately.
 
 from __future__ import annotations
 
-from typing import Dict, List, Sequence
+from typing import Dict, List, Mapping, Sequence
 
 import numpy as np
 
@@ -58,6 +58,67 @@ def kfold_cases(case_ids: Sequence[str], n_splits: int = 5) -> List[Dict[str, Li
         val = [str(c) for c in val_arr.tolist()]
         val_set = set(val)
         train = [c for c in cases if c not in val_set]
+        folds.append({"train": train, "val": val})
+    return folds
+
+
+def foreground_ratio_bin(
+    ratio: float,
+    sparse_threshold: float = 0.05,
+    dense_threshold: float = 0.95,
+    eps: float = 1e-8,
+) -> str:
+    """Bucket a case by foreground occupancy for fold stratification."""
+    ratio = float(ratio)
+    if ratio <= eps:
+        return "all_background"
+    if ratio < sparse_threshold:
+        return "sparse_foreground"
+    if ratio >= 1.0 - eps:
+        return "all_foreground"
+    if ratio > dense_threshold:
+        return "dense_foreground"
+    return "mixed"
+
+
+def stratified_kfold_cases(
+    case_ids: Sequence[str],
+    foreground_ratios: Mapping[str, float],
+    n_splits: int = 5,
+) -> List[Dict[str, List[str]]]:
+    """Create deterministic folds balanced by foreground occupancy buckets.
+
+    This is useful for small tunnel-volume datasets where all-background or
+    all-foreground cases are valid but can dominate one fold if cases are split
+    only by sorted id.
+    """
+    cases = sorted(case_ids)
+    if len(cases) < 2:
+        raise ValueError("Need at least two cases to create train/val folds")
+    n_splits = min(int(n_splits), len(cases))
+    if n_splits < 2:
+        raise ValueError("n_splits must be at least 2")
+
+    missing = [c for c in cases if c not in foreground_ratios]
+    if missing:
+        raise ValueError(f"Missing foreground ratios for {len(missing)} cases")
+
+    val_by_fold: List[List[str]] = [[] for _ in range(n_splits)]
+    buckets: Dict[str, List[str]] = {}
+    for case in cases:
+        bucket = foreground_ratio_bin(foreground_ratios[case])
+        buckets.setdefault(bucket, []).append(case)
+
+    # Split each bucket across folds so extremes are spread instead of clustered.
+    for bucket_cases in buckets.values():
+        for fold_idx, arr in enumerate(np.array_split(np.asarray(bucket_cases, dtype=object), n_splits)):
+            val_by_fold[fold_idx].extend(str(c) for c in arr.tolist())
+
+    folds: List[Dict[str, List[str]]] = []
+    all_cases = set(cases)
+    for val in val_by_fold:
+        val = sorted(val)
+        train = sorted(all_cases.difference(val))
         folds.append({"train": train, "val": val})
     return folds
 

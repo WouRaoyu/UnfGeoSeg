@@ -186,7 +186,12 @@ def cmd_build_cc(args):
 
 
 def cmd_make_splits(args):
-    from .data.splits import default_case_to_tunnel, kfold_cases, leave_one_tunnel_out
+    from .data.splits import (
+        default_case_to_tunnel,
+        kfold_cases,
+        leave_one_tunnel_out,
+        stratified_kfold_cases,
+    )
 
     pre = nnunet_dirs().get("nnUNet_preprocessed")
     dataset_dir = pre / args.dataset if pre else Path(args.dataset)
@@ -197,6 +202,13 @@ def cmd_make_splits(args):
     mapping = default_case_to_tunnel(cases)
     if args.protocol == "kfold":
         folds = kfold_cases(cases, n_splits=args.folds)
+    elif args.protocol == "stratified_kfold":
+        ratios = {}
+        for case in cases:
+            label_path = raw / "labelsTr" / f"{case}{fe}"
+            label, _ = read_volume(label_path)
+            ratios[case] = float(np.count_nonzero(label) / label.size)
+        folds = stratified_kfold_cases(cases, ratios, n_splits=args.folds)
     elif args.protocol == "leave_one_tunnel_out":
         folds = leave_one_tunnel_out(mapping)
     elif len(set(mapping.values())) < 2:
@@ -369,7 +381,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("make-splits"); add_common(sp)
     sp.add_argument("--dataset", required=True)
-    sp.add_argument("--protocol", choices=("auto", "kfold", "leave_one_tunnel_out"),
+    sp.add_argument("--protocol", choices=("auto", "kfold", "stratified_kfold", "leave_one_tunnel_out"),
                     default="auto")
     sp.add_argument("--folds", type=int, default=5)
     sp.set_defaults(func=cmd_make_splits)

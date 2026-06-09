@@ -11,7 +11,12 @@ import torch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from segment.data.splits import blocked_chainage_split, kfold_cases, leave_one_tunnel_out
+from segment.data.splits import (
+    blocked_chainage_split,
+    kfold_cases,
+    leave_one_tunnel_out,
+    stratified_kfold_cases,
+)
 from segment.experiments.eval_metrics import (
     boundary_error_1d,
     classwise_metrics,
@@ -46,6 +51,23 @@ def test_kfold_cases_balances_single_project_folds():
     assert [len(f["val"]) for f in folds] == [28, 28, 27, 27, 27]
     assert [len(f["train"]) for f in folds] == [109, 109, 110, 110, 110]
     assert sorted(c for f in folds for c in f["val"]) == cases
+
+
+def test_stratified_kfold_spreads_foreground_extremes():
+    cases = [f"case_{i:03d}" for i in range(12)]
+    ratios = {
+        **{f"case_{i:03d}": 0.0 for i in range(3)},
+        **{f"case_{i:03d}": 1.0 for i in range(3, 6)},
+        **{f"case_{i:03d}": 0.5 for i in range(6, 12)},
+    }
+    folds = stratified_kfold_cases(cases, ratios, n_splits=3)
+    assert len(folds) == 3
+    assert [len(f["val"]) for f in folds] == [4, 4, 4]
+    for fold in folds:
+        fold_ratios = [ratios[c] for c in fold["val"]]
+        assert 0.0 in fold_ratios
+        assert 1.0 in fold_ratios
+        assert 0.5 in fold_ratios
 
 
 def test_classwise_and_boundary_metrics():

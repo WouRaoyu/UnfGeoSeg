@@ -39,6 +39,10 @@ class _UnfavorSegEpochsMixin:
             self.max_num_epochs = num_epochs
         if "UNFAVORSEG_LR" in os.environ:
             self.initial_lr = float(os.environ["UNFAVORSEG_LR"])
+        if "UNFAVORSEG_TRAIN_ITERS" in os.environ:
+            self.num_iterations_per_epoch = int(os.environ["UNFAVORSEG_TRAIN_ITERS"])
+        if "UNFAVORSEG_VAL_ITERS" in os.environ:
+            self.num_val_iterations_per_epoch = int(os.environ["UNFAVORSEG_VAL_ITERS"])
 
 
 class nnUNetTrainerUnfavorSeg(_UnfavorSegEpochsMixin, nnUNetTrainer):

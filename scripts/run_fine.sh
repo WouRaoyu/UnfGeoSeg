@@ -35,6 +35,8 @@ SPLIT_PROTOCOL="kfold"
 EPOCHS=100
 LR=0.0
 LAMBDA=0.3
+TRAIN_ITERS=0
+VAL_ITERS=0
 CONFIGURATION="3d_fullres"
 PY="${PYTHON:-python}"
 DT_BIN="${REPO_ROOT}/process/build/dt_pipeline"
@@ -88,10 +90,12 @@ usage() {
         "Fine-stage options:" \
         "  --fold VALUE                     nnU-Net fold, default 0" \
         "  --folds VALUE                    Number of single-project CV folds, default 5" \
-        "  --split-protocol VALUE           kfold, auto, or leave_one_tunnel_out; default kfold" \
+        "  --split-protocol VALUE           kfold, stratified_kfold, auto, or leave_one_tunnel_out; default kfold" \
         "  --epochs VALUE                   UNFAVORSEG_EPOCHS, default 100" \
         "  --lr VALUE                       Optional UNFAVORSEG_LR; 0 disables override" \
         "  --lambda VALUE                   UNFAVORSEG_LAMBDA, default 0.3" \
+        "  --train-iters VALUE              Optional UNFAVORSEG_TRAIN_ITERS; 0 disables override" \
+        "  --val-iters VALUE                Optional UNFAVORSEG_VAL_ITERS; 0 disables override" \
         "  --configuration VALUE            nnU-Net configuration, default 3d_fullres" \
         "  --trainer VALUE                  Trainer name; repeat or comma-separate" \
         "  --trainers VALUE                 Alias for --trainer" \
@@ -266,6 +270,16 @@ while [[ $# -gt 0 ]]; do
             LAMBDA="$2"
             shift 2
             ;;
+        --train-iters)
+            require_value "$1" "${2:-}"
+            TRAIN_ITERS="$2"
+            shift 2
+            ;;
+        --val-iters)
+            require_value "$1" "${2:-}"
+            VAL_ITERS="$2"
+            shift 2
+            ;;
         --configuration)
             require_value "$1" "${2:-}"
             CONFIGURATION="$2"
@@ -316,13 +330,15 @@ fi
 [[ "$FOLD" =~ ^[0-9]+$ ]] || die "--fold must be a non-negative integer"
 [[ "$FOLDS" =~ ^[0-9]+$ && "$FOLDS" -ge 2 ]] || die "--folds must be an integer >= 2"
 case "$SPLIT_PROTOCOL" in
-    auto|kfold|leave_one_tunnel_out) ;;
-    *) die "--split-protocol must be one of: auto, kfold, leave_one_tunnel_out" ;;
+    auto|kfold|stratified_kfold|leave_one_tunnel_out) ;;
+    *) die "--split-protocol must be one of: auto, kfold, stratified_kfold, leave_one_tunnel_out" ;;
 esac
 [[ "$WIDTH" =~ ^[0-9]+$ ]] || die "--width must be a non-negative integer"
 [[ "$EXPORT_START_INDEX" =~ ^[0-9]+$ ]] || die "--export-start-index must be a non-negative integer"
 validate_non_negative_number "--lr" "$LR"
 validate_non_negative_number "--lambda" "$LAMBDA"
+[[ "$TRAIN_ITERS" =~ ^[0-9]+$ ]] || die "--train-iters must be a non-negative integer"
+[[ "$VAL_ITERS" =~ ^[0-9]+$ ]] || die "--val-iters must be a non-negative integer"
 validate_non_negative_number "--minr" "$MINR"
 validate_non_negative_number "--maxr" "$MAXR"
 [[ ${#TRAINERS[@]} -gt 0 ]] || die "--trainer must contain at least one trainer"
@@ -407,6 +423,16 @@ for type_name in "${CLASSES[@]}"; do
             export UNFAVORSEG_LR="$LR"
         else
             unset UNFAVORSEG_LR || true
+        fi
+        if [[ "$TRAIN_ITERS" -gt 0 ]]; then
+            export UNFAVORSEG_TRAIN_ITERS="$TRAIN_ITERS"
+        else
+            unset UNFAVORSEG_TRAIN_ITERS || true
+        fi
+        if [[ "$VAL_ITERS" -gt 0 ]]; then
+            export UNFAVORSEG_VAL_ITERS="$VAL_ITERS"
+        else
+            unset UNFAVORSEG_VAL_ITERS || true
         fi
 
         for trainer in "${TRAINERS[@]}"; do
