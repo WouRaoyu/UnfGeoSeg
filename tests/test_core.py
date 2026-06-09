@@ -22,7 +22,7 @@ from segment.experiments.eval_metrics import (
     classwise_metrics,
     reliability_metrics,
 )
-from segment.fine.loss import ConfidenceConstrainedLoss
+from segment.fine.loss import ConfidenceConstrainedLoss, ConfidenceWeightedDiceCELoss
 from segment.fine.trainer import _DropProbfgChannel
 from segment.fine.transunet_wrapper import build_transunet
 
@@ -95,6 +95,18 @@ def test_confidence_loss_reduces_to_base_at_lambda0():
     probfg = torch.rand(1, 1, 16, 16, 16)
     l0 = ConfidenceConstrainedLoss(2, lambda_kl=0.0)
     assert abs(float(l0(y, target, probfg)) - float(l0.base_loss(y, target))) < 1e-6
+
+
+def test_confidence_weighted_loss_downweights_uncertain_labels():
+    loss = ConfidenceWeightedDiceCELoss(2, include_bg_dice=True)
+    logits = torch.tensor([[[[[3.0, -3.0]]], [[[-3.0, 3.0]]]]])
+    target = torch.tensor([[[[[1, 1]]]]])
+    both_high_conf = torch.tensor([[[[[0.95, 0.95]]]]]).float()
+    wrong_voxel_low_conf = torch.tensor([[[[[0.05, 0.95]]]]]).float()
+    both_low_conf = torch.tensor([[[[[0.05, 0.05]]]]]).float()
+
+    assert loss(logits, target, wrong_voxel_low_conf) < loss(logits, target, both_high_conf)
+    assert loss(logits, target, both_low_conf) < loss(logits, target, both_high_conf)
 
 
 def test_drop_probfg_channel_exposes_wrapped_decoder():

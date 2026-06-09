@@ -35,6 +35,12 @@ SPLIT_PROTOCOL="kfold"
 EPOCHS=100
 LR=0.0
 LAMBDA=0.3
+CONF_WEIGHTED=0
+MIN_CONF_WEIGHT=0.05
+CONF_POWER=1.0
+BG_WEIGHT=1.0
+FG_WEIGHT=1.0
+INCLUDE_BG_DICE=1
 TRAIN_ITERS=0
 VAL_ITERS=0
 LOG_VAL_STATS=0
@@ -95,6 +101,12 @@ usage() {
         "  --epochs VALUE                   UNFAVORSEG_EPOCHS, default 100" \
         "  --lr VALUE                       Optional UNFAVORSEG_LR; 0 disables override" \
         "  --lambda VALUE                   UNFAVORSEG_LAMBDA, default 0.3" \
+        "  --confidence-weighted            Weight Dice+CE voxels by coarse hard-label confidence" \
+        "  --min-confidence-weight VALUE    Floor for low-confidence labels, default 0.05" \
+        "  --confidence-power VALUE         Exponent for confidence weights, default 1.0" \
+        "  --bg-weight VALUE                Extra background label weight, default 1.0" \
+        "  --fg-weight VALUE                Extra foreground label weight, default 1.0" \
+        "  --no-bg-dice                     Exclude background from confidence-weighted Dice" \
         "  --train-iters VALUE              Optional UNFAVORSEG_TRAIN_ITERS; 0 disables override" \
         "  --val-iters VALUE                Optional UNFAVORSEG_VAL_ITERS; 0 disables override" \
         "  --log-val-stats                  Log validation patch foreground/prediction stats" \
@@ -272,6 +284,34 @@ while [[ $# -gt 0 ]]; do
             LAMBDA="$2"
             shift 2
             ;;
+        --confidence-weighted)
+            CONF_WEIGHTED=1
+            shift
+            ;;
+        --min-confidence-weight)
+            require_value "$1" "${2:-}"
+            MIN_CONF_WEIGHT="$2"
+            shift 2
+            ;;
+        --confidence-power)
+            require_value "$1" "${2:-}"
+            CONF_POWER="$2"
+            shift 2
+            ;;
+        --bg-weight)
+            require_value "$1" "${2:-}"
+            BG_WEIGHT="$2"
+            shift 2
+            ;;
+        --fg-weight)
+            require_value "$1" "${2:-}"
+            FG_WEIGHT="$2"
+            shift 2
+            ;;
+        --no-bg-dice)
+            INCLUDE_BG_DICE=0
+            shift
+            ;;
         --train-iters)
             require_value "$1" "${2:-}"
             TRAIN_ITERS="$2"
@@ -343,6 +383,10 @@ esac
 [[ "$EXPORT_START_INDEX" =~ ^[0-9]+$ ]] || die "--export-start-index must be a non-negative integer"
 validate_non_negative_number "--lr" "$LR"
 validate_non_negative_number "--lambda" "$LAMBDA"
+validate_non_negative_number "--min-confidence-weight" "$MIN_CONF_WEIGHT"
+validate_non_negative_number "--confidence-power" "$CONF_POWER"
+validate_non_negative_number "--bg-weight" "$BG_WEIGHT"
+validate_non_negative_number "--fg-weight" "$FG_WEIGHT"
 [[ "$TRAIN_ITERS" =~ ^[0-9]+$ ]] || die "--train-iters must be a non-negative integer"
 [[ "$VAL_ITERS" =~ ^[0-9]+$ ]] || die "--val-iters must be a non-negative integer"
 validate_non_negative_number "--minr" "$MINR"
@@ -424,6 +468,12 @@ for type_name in "${CLASSES[@]}"; do
     if [[ "$SKIP_TRAIN" -eq 0 ]]; then
         echo "${CYAN}== 3. Train fine-stage models ==${RESET}"
         export UNFAVORSEG_LAMBDA="$LAMBDA"
+        export UNFAVORSEG_CONF_WEIGHTED="$CONF_WEIGHTED"
+        export UNFAVORSEG_MIN_CONF_WEIGHT="$MIN_CONF_WEIGHT"
+        export UNFAVORSEG_CONF_POWER="$CONF_POWER"
+        export UNFAVORSEG_BG_WEIGHT="$BG_WEIGHT"
+        export UNFAVORSEG_FG_WEIGHT="$FG_WEIGHT"
+        export UNFAVORSEG_INCLUDE_BG_DICE="$INCLUDE_BG_DICE"
         export UNFAVORSEG_EPOCHS="$EPOCHS"
         if [[ ! "$LR" =~ ^0*([.]0*)?$ ]]; then
             export UNFAVORSEG_LR="$LR"

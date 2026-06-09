@@ -65,12 +65,131 @@ class _LocalDiceCE(nn.Module):
         return ce + dice
 
 
+class ConfidenceWeightedDiceCELoss(nn.Module):
+    """Dice+CE where each voxel is weighted by the coarse-label confidence.
+
+    For a binary hard pseudo-label, the confidence of the assigned label is
+    ``probfg`` for foreground voxels and ``1 - probfg`` for background voxels.
+    This is the loss to use when the coarse probability should control how much
+    each hard pseudo-label contributes to training, instead of adding a separate
+    soft-distribution KL term.
+    """
+
+    def __init__(
+        self,
+        num_classes: int,
+        weight_ce: float = 1.0,
+        weight_dice: float = 1.0,
+        min_confidence_weight: float = 0.05,
+        confidence_power: float = 1.0,
+        bg_weight: float = 1.0,
+        fg_weight: float = 1.0,
+        include_bg_dice: bool = True,
+    ):
+        super().__init__()
+        if num_classes != 2:
+            raise ValueError("confidence-weighted loss currently supports binary runs")
+        self.num_classes = num_classes
+        self.weight_ce = float(weight_ce)
+        self.weight_dice = float(weight_dice)
+        self.min_confidence_weight = float(min_confidence_weight)
+        self.confidence_power = float(confidence_power)
+        self.bg_weight = float(bg_weight)
+        self.fg_weight = float(fg_weight)
+        self.include_bg_dice = bool(include_bg_dice)
+
+    @staticmethod
+    def _target_indices(target: torch.Tensor, net_output: torch.Tensor) -> torch.Tensor:
+        if target.ndim == net_output.ndim:
+            target = target[:, 0]
+        return target.long()
+
+    def voxel_weights(self, target: torch.Tensor, probfg: torch.Tensor) -> torch.Tensor:
+        if probfg.ndim >= 2 and probfg.shape[1] == 1:
+            probfg = probfg[:, 0]
+        fg = probfg.clamp(0.0, 1.0)
+        target_fg = target > 0
+        confidence = torch.where(target_fg, fg, 1.0 - fg)
+        confidence = confidence.clamp(0.0, 1.0)
+        if self.confidence_power != 1.0:
+            confidence = confidence.pow(self.confidence_power)
+        confidence = self.min_confidence_weight + (
+            1.0 - self.min_confidence_weight
+        ) * confidence
+        class_weight = torch.where(
+            target_fg,
+            torch.as_tensor(self.fg_weight, device=target.device, dtype=confidence.dtype),
+            torch.as_tensor(self.bg_weight, device=target.device, dtype=confidence.dtype),
+        )
+        return confidence * class_weight
+
+    def forward(
+        self,
+        net_output: torch.Tensor,
+        target: torch.Tensor,
+        probfg: torch.Tensor,
+    ) -> torch.Tensor:
+        target_idx = self._target_indices(target, net_output)
+        weights = self.voxel_weights(target_idx, probfg).to(net_output.dtype)
+
+        ce_map = F.cross_entropy(net_output, target_idx, reduction="none")
+        ce = (ce_map * weights).mean()
+
+        probs = torch.softmax(net_output, dim=1)
+        oh = F.one_hot(target_idx, self.num_classes)
+        oh = oh.permute(0, -1, *range(1, oh.ndim - 1)).to(probs.dtype)
+        w = weights[:, None]
+        dims = tuple(range(2, net_output.ndim))
+        inter = (w * probs * oh).sum(dims)
+        pred = (w * probs).sum(dims)
+        tgt = (w * oh).sum(dims)
+        dice_score = (2.0 * inter + 1e-5) / (pred + tgt + 1e-5)
+        class_weights = torch.as_tensor(
+            [self.bg_weight, self.fg_weight], device=net_output.device, dtype=net_output.dtype
+        )
+        if self.include_bg_dice:
+            dice_loss = 1.0 - dice_score
+            selected_weights = class_weights
+        else:
+            dice_loss = 1.0 - dice_score[:, 1:]
+            selected_weights = class_weights[1:]
+        dice = (dice_loss * selected_weights).sum() / (
+            dice_loss.shape[0] * selected_weights.sum().clamp_min(1e-8)
+        )
+        dice = dice * weights.mean()
+        return self.weight_ce * ce + self.weight_dice * dice
+
+
 class ConfidenceConstrainedLoss(nn.Module):
-    def __init__(self, num_classes: int, lambda_kl: float = 0.3, base_loss=None):
+    def __init__(
+        self,
+        num_classes: int,
+        lambda_kl: float = 0.3,
+        base_loss=None,
+        confidence_weighted: bool = False,
+        min_confidence_weight: float = 0.05,
+        confidence_power: float = 1.0,
+        bg_weight: float = 1.0,
+        fg_weight: float = 1.0,
+        include_bg_dice: bool = True,
+    ):
         super().__init__()
         self.num_classes = num_classes  # includes background
         self.lambda_kl = float(lambda_kl)
         self.base_loss = base_loss if base_loss is not None else _build_base_loss()
+        self.confidence_weighted = bool(confidence_weighted)
+        self.weighted_base = (
+            ConfidenceWeightedDiceCELoss(
+                num_classes=num_classes,
+                min_confidence_weight=min_confidence_weight,
+                confidence_power=confidence_power,
+                bg_weight=bg_weight,
+                fg_weight=fg_weight,
+                include_bg_dice=include_bg_dice,
+            )
+            if self.confidence_weighted
+            else None
+        )
 
     def soft_target(self, probfg: torch.Tensor) -> torch.Tensor:
         """Reconstruct binary P (B, 2, ...) directly from foreground probability."""
@@ -87,7 +206,10 @@ class ConfidenceConstrainedLoss(nn.Module):
         hard_target: torch.Tensor,
         probfg: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        base = self.base_loss(net_output, hard_target)
+        if self.weighted_base is not None and probfg is not None:
+            base = self.weighted_base(net_output, hard_target, probfg)
+        else:
+            base = self.base_loss(net_output, hard_target)
         if probfg is None or self.lambda_kl == 0.0:
             return base
         P = self.soft_target(probfg)

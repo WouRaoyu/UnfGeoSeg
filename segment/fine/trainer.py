@@ -30,6 +30,10 @@ from .loss import ConfidenceConstrainedLoss
 from .transunet_wrapper import build_transunet
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).lower() in {"1", "true", "yes", "on"}
+
+
 class _UnfavorSegEpochsMixin:
     default_num_epochs = 100
 
@@ -123,11 +127,23 @@ class nnUNetTrainerTransUNetCC(nnUNetTrainerTransUNet):
                  device=torch.device("cuda")):
         super().__init__(plans, configuration, fold, dataset_json, unpack_dataset, device)
         self.lambda_kl = float(os.environ.get("UNFAVORSEG_LAMBDA", "0.3"))
+        self.confidence_weighted = _env_flag("UNFAVORSEG_CONF_WEIGHTED")
+        self.min_confidence_weight = float(os.environ.get("UNFAVORSEG_MIN_CONF_WEIGHT", "0.05"))
+        self.confidence_power = float(os.environ.get("UNFAVORSEG_CONF_POWER", "1.0"))
+        self.bg_weight = float(os.environ.get("UNFAVORSEG_BG_WEIGHT", "1.0"))
+        self.fg_weight = float(os.environ.get("UNFAVORSEG_FG_WEIGHT", "1.0"))
+        self.include_bg_dice = _env_flag("UNFAVORSEG_INCLUDE_BG_DICE", "1")
 
     def _build_loss(self):
         return ConfidenceConstrainedLoss(
             num_classes=self.label_manager.num_segmentation_heads,
             lambda_kl=self.lambda_kl,
+            confidence_weighted=self.confidence_weighted,
+            min_confidence_weight=self.min_confidence_weight,
+            confidence_power=self.confidence_power,
+            bg_weight=self.bg_weight,
+            fg_weight=self.fg_weight,
+            include_bg_dice=self.include_bg_dice,
         )
 
     @staticmethod
