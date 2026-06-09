@@ -80,7 +80,7 @@ class ConfidenceWeightedDiceCELoss(nn.Module):
         num_classes: int,
         weight_ce: float = 1.0,
         weight_dice: float = 1.0,
-        min_confidence_weight: float = 0.05,
+        min_confidence_weight: float = 0.5,
         confidence_power: float = 1.0,
         bg_weight: float = 1.0,
         fg_weight: float = 1.0,
@@ -131,6 +131,7 @@ class ConfidenceWeightedDiceCELoss(nn.Module):
     ) -> torch.Tensor:
         target_idx = self._target_indices(target, net_output)
         weights = self.voxel_weights(target_idx, probfg).to(net_output.dtype)
+        weights = weights / weights.detach().mean().clamp_min(1e-8)
 
         ce_map = F.cross_entropy(net_output, target_idx, reduction="none")
         ce = (ce_map * weights).mean()
@@ -156,7 +157,6 @@ class ConfidenceWeightedDiceCELoss(nn.Module):
         dice = (dice_loss * selected_weights).sum() / (
             dice_loss.shape[0] * selected_weights.sum().clamp_min(1e-8)
         )
-        dice = dice * weights.mean()
         return self.weight_ce * ce + self.weight_dice * dice
 
 
@@ -167,7 +167,7 @@ class ConfidenceConstrainedLoss(nn.Module):
         lambda_kl: float = 0.3,
         base_loss=None,
         confidence_weighted: bool = False,
-        min_confidence_weight: float = 0.05,
+        min_confidence_weight: float = 0.5,
         confidence_power: float = 1.0,
         bg_weight: float = 1.0,
         fg_weight: float = 1.0,

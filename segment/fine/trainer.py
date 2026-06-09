@@ -128,7 +128,7 @@ class nnUNetTrainerTransUNetCC(nnUNetTrainerTransUNet):
         super().__init__(plans, configuration, fold, dataset_json, unpack_dataset, device)
         self.lambda_kl = float(os.environ.get("UNFAVORSEG_LAMBDA", "0.3"))
         self.confidence_weighted = _env_flag("UNFAVORSEG_CONF_WEIGHTED")
-        self.min_confidence_weight = float(os.environ.get("UNFAVORSEG_MIN_CONF_WEIGHT", "0.05"))
+        self.min_confidence_weight = float(os.environ.get("UNFAVORSEG_MIN_CONF_WEIGHT", "0.5"))
         self.confidence_power = float(os.environ.get("UNFAVORSEG_CONF_POWER", "1.0"))
         self.bg_weight = float(os.environ.get("UNFAVORSEG_BG_WEIGHT", "1.0"))
         self.fg_weight = float(os.environ.get("UNFAVORSEG_FG_WEIGHT", "1.0"))
@@ -228,15 +228,35 @@ class nnUNetTrainerTransUNetCC(nnUNetTrainerTransUNet):
             gt_fg_voxels = float((target[:, :-1] > 0).sum().detach().cpu().item())
             pred_fg_voxels = float((predicted_onehot > 0).sum().detach().cpu().item())
         else:
-            gt_fg_voxels = float((target > 0).sum().detach().cpu().item())
+            target_fg = target > 0
+            gt_fg_voxels = float(target_fg.sum().detach().cpu().item())
             pred_fg_voxels = float(predicted_onehot[:, 1:].sum().detach().cpu().item())
+        probfg_map = probfg[:, 0] if probfg.ndim >= 2 and probfg.shape[1] == 1 else probfg
+        if self.label_manager.has_regions:
+            probfg_mean = float(probfg_map.mean().detach().cpu().item())
+            probfg_fg_mean = float("nan")
+            probfg_bg_mean = float("nan")
+        else:
+            target_fg_map = target_fg[:, 0] if target_fg.ndim == probfg_map.ndim + 1 else target_fg
+            target_fg_map = target_fg_map.to(dtype=torch.bool)
+            probfg_mean = float(probfg_map.mean().detach().cpu().item())
+            probfg_fg_mean = float(
+                probfg_map[target_fg_map].mean().detach().cpu().item()
+            ) if bool(target_fg_map.any()) else float("nan")
+            bg_mask = ~target_fg_map
+            probfg_bg_mean = float(
+                probfg_map[bg_mask].mean().detach().cpu().item()
+            ) if bool(bg_mask.any()) else float("nan")
         if not self.label_manager.has_regions:
             tp_hard, fp_hard, fn_hard = tp_hard[1:], fp_hard[1:], fn_hard[1:]
         return {"loss": l.detach().cpu().numpy(), "tp_hard": tp_hard,
                 "fp_hard": fp_hard, "fn_hard": fn_hard,
                 "gt_fg_voxels": gt_fg_voxels,
                 "pred_fg_voxels": pred_fg_voxels,
-                "total_voxels": total_voxels}
+                "total_voxels": total_voxels,
+                "probfg_mean": probfg_mean,
+                "probfg_fg_mean": probfg_fg_mean,
+                "probfg_bg_mean": probfg_bg_mean}
 
     def on_validation_epoch_end(self, val_outputs: list[dict]):
         if os.environ.get("UNFAVORSEG_LOG_VAL_STATS", "0").lower() in {"1", "true", "yes"}:
@@ -246,6 +266,9 @@ class nnUNetTrainerTransUNetCC(nnUNetTrainerTransUNet):
             tp = np.asarray([np.sum(o["tp_hard"]) for o in val_outputs], dtype=np.float64)
             fp = np.asarray([np.sum(o["fp_hard"]) for o in val_outputs], dtype=np.float64)
             fn = np.asarray([np.sum(o["fn_hard"]) for o in val_outputs], dtype=np.float64)
+            probfg_mean = np.asarray([o["probfg_mean"] for o in val_outputs], dtype=np.float64)
+            probfg_fg_mean = np.asarray([o["probfg_fg_mean"] for o in val_outputs], dtype=np.float64)
+            probfg_bg_mean = np.asarray([o["probfg_bg_mean"] for o in val_outputs], dtype=np.float64)
             denom = 2 * tp + fp + fn
             batch_dice = np.divide(2 * tp, denom, out=np.full_like(tp, np.nan), where=denom > 0)
             eps = 1e-8
@@ -257,6 +280,9 @@ class nnUNetTrainerTransUNetCC(nnUNetTrainerTransUNet):
                 f"full_gt={int(np.sum(gt_fg >= total - eps))}/{len(gt_fg)}, "
                 f"empty_pred={int(np.sum(pred_fg <= eps))}/{len(pred_fg)}, "
                 f"full_pred={int(np.sum(pred_fg >= total - eps))}/{len(pred_fg)}, "
+                f"probfg_mean={np.nanmean(probfg_mean):.6f}, "
+                f"probfg_fg={np.nanmean(probfg_fg_mean):.6f}, "
+                f"probfg_bg={np.nanmean(probfg_bg_mean):.6f}, "
                 f"batch_dice_p10={np.nanpercentile(batch_dice, 10):.4f}, "
                 f"batch_dice_p50={np.nanpercentile(batch_dice, 50):.4f}"
             )

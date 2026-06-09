@@ -106,7 +106,7 @@ def test_confidence_weighted_loss_downweights_uncertain_labels():
     both_low_conf = torch.tensor([[[[[0.05, 0.05]]]]]).float()
 
     assert loss(logits, target, wrong_voxel_low_conf) < loss(logits, target, both_high_conf)
-    assert loss(logits, target, both_low_conf) < loss(logits, target, both_high_conf)
+    assert torch.isclose(loss(logits, target, both_low_conf), loss(logits, target, both_high_conf))
 
 
 def test_drop_probfg_channel_exposes_wrapped_decoder():

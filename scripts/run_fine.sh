@@ -36,7 +36,7 @@ EPOCHS=100
 LR=0.0
 LAMBDA=0.3
 CONF_WEIGHTED=0
-MIN_CONF_WEIGHT=0.05
+MIN_CONF_WEIGHT=0.5
 CONF_POWER=1.0
 BG_WEIGHT=1.0
 FG_WEIGHT=1.0
@@ -102,7 +102,7 @@ usage() {
         "  --lr VALUE                       Optional UNFAVORSEG_LR; 0 disables override" \
         "  --lambda VALUE                   UNFAVORSEG_LAMBDA, default 0.3" \
         "  --confidence-weighted            Weight Dice+CE voxels by coarse hard-label confidence" \
-        "  --min-confidence-weight VALUE    Floor for low-confidence labels, default 0.05" \
+        "  --min-confidence-weight VALUE    Floor for low-confidence labels, default 0.5" \
         "  --confidence-power VALUE         Exponent for confidence weights, default 1.0" \
         "  --bg-weight VALUE                Extra background label weight, default 1.0" \
         "  --fg-weight VALUE                Extra foreground label weight, default 1.0" \
