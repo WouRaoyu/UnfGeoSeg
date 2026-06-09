@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 
+import numpy as np
 import torch
 from torch import autocast, nn
 
@@ -206,7 +207,41 @@ class nnUNetTrainerTransUNetCC(nnUNetTrainerTransUNet):
         tp_hard = tp.detach().cpu().numpy()
         fp_hard = fp.detach().cpu().numpy()
         fn_hard = fn.detach().cpu().numpy()
+        total_voxels = float(target.numel())
+        if self.label_manager.has_regions:
+            gt_fg_voxels = float((target[:, :-1] > 0).sum().detach().cpu().item())
+            pred_fg_voxels = float((predicted_onehot > 0).sum().detach().cpu().item())
+        else:
+            gt_fg_voxels = float((target > 0).sum().detach().cpu().item())
+            pred_fg_voxels = float(predicted_onehot[:, 1:].sum().detach().cpu().item())
         if not self.label_manager.has_regions:
             tp_hard, fp_hard, fn_hard = tp_hard[1:], fp_hard[1:], fn_hard[1:]
         return {"loss": l.detach().cpu().numpy(), "tp_hard": tp_hard,
-                "fp_hard": fp_hard, "fn_hard": fn_hard}
+                "fp_hard": fp_hard, "fn_hard": fn_hard,
+                "gt_fg_voxels": gt_fg_voxels,
+                "pred_fg_voxels": pred_fg_voxels,
+                "total_voxels": total_voxels}
+
+    def on_validation_epoch_end(self, val_outputs: list[dict]):
+        if os.environ.get("UNFAVORSEG_LOG_VAL_STATS", "0").lower() in {"1", "true", "yes"}:
+            gt_fg = np.asarray([o["gt_fg_voxels"] for o in val_outputs], dtype=np.float64)
+            pred_fg = np.asarray([o["pred_fg_voxels"] for o in val_outputs], dtype=np.float64)
+            total = np.asarray([o["total_voxels"] for o in val_outputs], dtype=np.float64)
+            tp = np.asarray([np.sum(o["tp_hard"]) for o in val_outputs], dtype=np.float64)
+            fp = np.asarray([np.sum(o["fp_hard"]) for o in val_outputs], dtype=np.float64)
+            fn = np.asarray([np.sum(o["fn_hard"]) for o in val_outputs], dtype=np.float64)
+            denom = 2 * tp + fp + fn
+            batch_dice = np.divide(2 * tp, denom, out=np.full_like(tp, np.nan), where=denom > 0)
+            eps = 1e-8
+            self.print_to_log_file(
+                "Val patch stats "
+                f"gt_fg={gt_fg.sum() / max(total.sum(), eps):.6f}, "
+                f"pred_fg={pred_fg.sum() / max(total.sum(), eps):.6f}, "
+                f"empty_gt={int(np.sum(gt_fg <= eps))}/{len(gt_fg)}, "
+                f"full_gt={int(np.sum(gt_fg >= total - eps))}/{len(gt_fg)}, "
+                f"empty_pred={int(np.sum(pred_fg <= eps))}/{len(pred_fg)}, "
+                f"full_pred={int(np.sum(pred_fg >= total - eps))}/{len(pred_fg)}, "
+                f"batch_dice_p10={np.nanpercentile(batch_dice, 10):.4f}, "
+                f"batch_dice_p50={np.nanpercentile(batch_dice, 50):.4f}"
+            )
+        return super().on_validation_epoch_end(val_outputs)

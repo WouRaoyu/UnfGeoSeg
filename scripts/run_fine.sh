@@ -37,6 +37,7 @@ LR=0.0
 LAMBDA=0.3
 TRAIN_ITERS=0
 VAL_ITERS=0
+LOG_VAL_STATS=0
 CONFIGURATION="3d_fullres"
 PY="${PYTHON:-python}"
 DT_BIN="${REPO_ROOT}/process/build/dt_pipeline"
@@ -96,6 +97,7 @@ usage() {
         "  --lambda VALUE                   UNFAVORSEG_LAMBDA, default 0.3" \
         "  --train-iters VALUE              Optional UNFAVORSEG_TRAIN_ITERS; 0 disables override" \
         "  --val-iters VALUE                Optional UNFAVORSEG_VAL_ITERS; 0 disables override" \
+        "  --log-val-stats                  Log validation patch foreground/prediction stats" \
         "  --configuration VALUE            nnU-Net configuration, default 3d_fullres" \
         "  --trainer VALUE                  Trainer name; repeat or comma-separate" \
         "  --trainers VALUE                 Alias for --trainer" \
@@ -280,6 +282,10 @@ while [[ $# -gt 0 ]]; do
             VAL_ITERS="$2"
             shift 2
             ;;
+        --log-val-stats)
+            LOG_VAL_STATS=1
+            shift
+            ;;
         --configuration)
             require_value "$1" "${2:-}"
             CONFIGURATION="$2"
@@ -433,6 +439,11 @@ for type_name in "${CLASSES[@]}"; do
             export UNFAVORSEG_VAL_ITERS="$VAL_ITERS"
         else
             unset UNFAVORSEG_VAL_ITERS || true
+        fi
+        if [[ "$LOG_VAL_STATS" -eq 1 ]]; then
+            export UNFAVORSEG_LOG_VAL_STATS=1
+        else
+            unset UNFAVORSEG_LOG_VAL_STATS || true
         fi
 
         for trainer in "${TRAINERS[@]}"; do
