@@ -15,6 +15,7 @@ probability-constrained loss stays aligned with the probfg soft-target map (see
 
 from __future__ import annotations
 
+import math
 from typing import List, Sequence, Tuple
 
 import torch
@@ -69,11 +70,54 @@ class StageBlock(nn.Module):
         return self.block(x)
 
 
+def _sinusoidal_3d_encoding(
+    channels: int,
+    spatial_shape: Tuple[int, int, int],
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Return a size-adaptive 3D sinusoidal encoding ``(1, C, D, H, W)``."""
+    d, h, w = spatial_shape
+    coords = [
+        torch.linspace(-1.0, 1.0, d, device=device, dtype=dtype),
+        torch.linspace(-1.0, 1.0, h, device=device, dtype=dtype),
+        torch.linspace(-1.0, 1.0, w, device=device, dtype=dtype),
+    ]
+    zz, yy, xx = torch.meshgrid(coords[0], coords[1], coords[2], indexing="ij")
+    grids = (zz, yy, xx)
+    enc = torch.zeros((channels, d, h, w), device=device, dtype=dtype)
+    if channels == 0:
+        return enc[None]
+
+    pair_slots = max(channels // 2, 1)
+    per_axis = max(math.ceil(pair_slots / 3), 1)
+    out_c = 0
+    for grid in grids:
+        for i in range(per_axis):
+            if out_c >= channels:
+                break
+            freq = math.pi * (2.0 ** i)
+            enc[out_c] = torch.sin(freq * grid)
+            out_c += 1
+            if out_c >= channels:
+                break
+            enc[out_c] = torch.cos(freq * grid)
+            out_c += 1
+    return enc[None]
+
+
 class TransformerBottleneck(nn.Module):
     """Transformer encoder over the flattened bottleneck voxels."""
 
-    def __init__(self, channels: int, depth: int = 4, mlp_ratio: float = 4.0):
+    def __init__(
+        self,
+        channels: int,
+        depth: int = 4,
+        mlp_ratio: float = 4.0,
+        positional_encoding: str = "sinusoidal_3d",
+    ):
         super().__init__()
+        self.positional_encoding = positional_encoding
         heads = _pick_heads(channels)
         layer = nn.TransformerEncoderLayer(
             d_model=channels,
@@ -85,12 +129,24 @@ class TransformerBottleneck(nn.Module):
             norm_first=True,
         )
         self.encoder = nn.TransformerEncoder(layer, num_layers=depth)
-        self.pos = nn.Parameter(torch.zeros(1, 1, channels))  # size-agnostic bias
-        nn.init.trunc_normal_(self.pos, std=0.02)
+        if positional_encoding == "learned_bias":
+            self.pos = nn.Parameter(torch.zeros(1, 1, channels))
+            nn.init.trunc_normal_(self.pos, std=0.02)
+        elif positional_encoding in {"sinusoidal_3d", "none"}:
+            self.register_parameter("pos", None)
+        else:
+            raise ValueError(
+                "positional_encoding must be 'sinusoidal_3d', 'learned_bias', or 'none'"
+            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, c, d, h, w = x.shape
-        tokens = x.flatten(2).transpose(1, 2) + self.pos
+        tokens = x.flatten(2).transpose(1, 2)
+        if self.positional_encoding == "sinusoidal_3d":
+            pos = _sinusoidal_3d_encoding(c, (d, h, w), x.device, x.dtype)
+            tokens = tokens + pos.flatten(2).transpose(1, 2)
+        elif self.pos is not None:
+            tokens = tokens + self.pos
         tokens = self.encoder(tokens)
         return tokens.transpose(1, 2).reshape(b, c, d, h, w)
 
@@ -105,6 +161,7 @@ class TransUNet3D(nn.Module):
         n_conv_per_stage: Sequence[int] | int = 2,
         kernel_sizes: Sequence[int] | int = 3,
         transformer_depth: int = 4,
+        positional_encoding: str = "sinusoidal_3d",
     ):
         super().__init__()
         n_stages = len(features_per_stage)
@@ -123,7 +180,9 @@ class TransUNet3D(nn.Module):
             prev = f
 
         self.transformer = TransformerBottleneck(
-            features_per_stage[-1], depth=transformer_depth
+            features_per_stage[-1],
+            depth=transformer_depth,
+            positional_encoding=positional_encoding,
         )
 
         # decoder (n_stages - 1 up steps)
@@ -181,6 +240,7 @@ def build_transunet(
     )
     n_conv = ak.get("n_conv_per_stage", 2)
     kernels = ak.get("kernel_sizes", 3)
+    positional_encoding = ak.get("positional_encoding", "sinusoidal_3d")
     return TransUNet3D(
         in_channels=num_input_channels,
         num_classes=num_output_channels,
@@ -188,4 +248,5 @@ def build_transunet(
         strides=strides,
         n_conv_per_stage=n_conv,
         kernel_sizes=kernels,
+        positional_encoding=positional_encoding,
     )

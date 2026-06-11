@@ -18,6 +18,7 @@ from segment.fine.trainer import (  # noqa: F401
     nnUNetTrainerUnfavorSeg,
     nnUNetTrainerTransUNet,
     nnUNetTrainerTransUNetCC,
+    nnUNetTrainerTransUNetWeakCC,
 )
 '''
 

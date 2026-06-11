@@ -77,15 +77,25 @@ foreach ($cls in $Classes) {
     nnUNetv2_preprocess -d $CCId -c 3d_fullres
     & $Py -m segment.cli make-splits --dataset $CCDataset
 
-    Write-Host "== 5. Train: proposed (CC), plain TransUNet, nnU-Net baseline ==" -ForegroundColor Cyan
+    Write-Host "== 5. Train: nnU-Net baseline, plain TransUNet, CC, WeakCC ==" -ForegroundColor Cyan
     $env:UNFAVORSEG_LAMBDA = "0.3"
     $env:UNFAVORSEG_EPOCHS = "$Epochs"
+    if (-not $env:UNFAVORSEG_POS_ENCODING) { $env:UNFAVORSEG_POS_ENCODING = "sinusoidal_3d" }
+    if (-not $env:UNFAVORSEG_CONFIDENCE_FLOOR) { $env:UNFAVORSEG_CONFIDENCE_FLOOR = "0.1" }
+    if (-not $env:UNFAVORSEG_WEAK_KL_MAX) { $env:UNFAVORSEG_WEAK_KL_MAX = "0.1" }
+    if (-not $env:UNFAVORSEG_CONSISTENCY) { $env:UNFAVORSEG_CONSISTENCY = "1" }
+    if (-not $env:UNFAVORSEG_CONSISTENCY_WEIGHT) { $env:UNFAVORSEG_CONSISTENCY_WEIGHT = "0.2" }
+    if (-not $env:UNFAVORSEG_CONSISTENCY_CONF) { $env:UNFAVORSEG_CONSISTENCY_CONF = "0.75" }
+    if (-not $env:UNFAVORSEG_EMA_DECAY) { $env:UNFAVORSEG_EMA_DECAY = "0.99" }
+    if (-not $env:UNFAVORSEG_EDGE_AWARE_TV) { $env:UNFAVORSEG_EDGE_AWARE_TV = "1" }
+    if (-not $env:UNFAVORSEG_EDGE_TV_WEIGHT) { $env:UNFAVORSEG_EDGE_TV_WEIGHT = "0.02" }
     if ($LR -gt 0) {
         $env:UNFAVORSEG_LR = "$LR"
     }
-    & $Py -m nnunetv2.run.run_training $CCId 3d_fullres $Fold -tr nnUNetTrainerTransUNetCC
-    & $Py -m nnunetv2.run.run_training $CCId 3d_fullres $Fold -tr nnUNetTrainerTransUNet
     & $Py -m nnunetv2.run.run_training $CCId 3d_fullres $Fold -tr nnUNetTrainerUnfavorSeg
+    & $Py -m nnunetv2.run.run_training $CCId 3d_fullres $Fold -tr nnUNetTrainerTransUNet
+    & $Py -m nnunetv2.run.run_training $CCId 3d_fullres $Fold -tr nnUNetTrainerTransUNetCC
+    & $Py -m nnunetv2.run.run_training $CCId 3d_fullres $Fold -tr nnUNetTrainerTransUNetWeakCC
 
     if ($LambdaSweep) {
         Write-Host "== 6. lambda sweep (Table X) ==" -ForegroundColor Cyan

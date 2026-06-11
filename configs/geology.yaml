@@ -65,11 +65,24 @@ coarse:
 # Fine-grained 3D-TransUNet + confidence-constrained loss (Eq. 5-6).
 # ---------------------------------------------------------------------------
 fine:
-  trainer: nnUNetTrainerTransUNetCC
+  trainer: nnUNetTrainerTransUNetWeakCC
   configuration: 3d_fullres
   epochs: 100                   # sufficient for fine-stage training
   lambda_kl: 0.3                # trade-off coefficient for the KL confidence term
   lambda_sweep: [0.0, 0.1, 0.3, 0.5, 1.0]
+  weak_supervision:
+    confidence_floor: 0.1       # probfg~=0.5 keeps only weak supervision pressure
+    kl_max: 0.1                 # weak KL warmup target, not a hard pseudo-label lock
+  consistency:
+    enabled: true
+    weight_max: 0.2
+    ema_decay: 0.99
+    teacher_confidence: 0.75
+  spatial_regularization:
+    edge_aware_tv: true
+    weight: 0.02
+  model:
+    positional_encoding: sinusoidal_3d
 
 # ---------------------------------------------------------------------------
 # Leakage-controlled validation design.

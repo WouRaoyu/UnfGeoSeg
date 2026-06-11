@@ -50,7 +50,12 @@ SKIP_EXPORT=0
 SKIP_PREPROCESS=0
 SKIP_TRAIN=0
 LAMBDA_SWEEP=0
-TRAINERS=("nnUNetTrainerTransUNetCC" "nnUNetTrainerTransUNet" "nnUNetTrainerUnfavorSeg")
+TRAINERS=(
+    "nnUNetTrainerUnfavorSeg"
+    "nnUNetTrainerTransUNet"
+    "nnUNetTrainerTransUNetCC"
+    "nnUNetTrainerTransUNetWeakCC"
+)
 
 if [[ -t 1 ]]; then
     CYAN=$'\033[36m'
@@ -419,6 +424,15 @@ for type_name in "${CLASSES[@]}"; do
         echo "${CYAN}== 3. Train fine-stage models ==${RESET}"
         export UNFAVORSEG_LAMBDA="$LAMBDA"
         export UNFAVORSEG_EPOCHS="$EPOCHS"
+        export UNFAVORSEG_POS_ENCODING="${UNFAVORSEG_POS_ENCODING:-sinusoidal_3d}"
+        export UNFAVORSEG_CONFIDENCE_FLOOR="${UNFAVORSEG_CONFIDENCE_FLOOR:-0.1}"
+        export UNFAVORSEG_WEAK_KL_MAX="${UNFAVORSEG_WEAK_KL_MAX:-0.1}"
+        export UNFAVORSEG_CONSISTENCY="${UNFAVORSEG_CONSISTENCY:-1}"
+        export UNFAVORSEG_CONSISTENCY_WEIGHT="${UNFAVORSEG_CONSISTENCY_WEIGHT:-0.2}"
+        export UNFAVORSEG_CONSISTENCY_CONF="${UNFAVORSEG_CONSISTENCY_CONF:-0.75}"
+        export UNFAVORSEG_EMA_DECAY="${UNFAVORSEG_EMA_DECAY:-0.99}"
+        export UNFAVORSEG_EDGE_AWARE_TV="${UNFAVORSEG_EDGE_AWARE_TV:-1}"
+        export UNFAVORSEG_EDGE_TV_WEIGHT="${UNFAVORSEG_EDGE_TV_WEIGHT:-0.02}"
         if [[ ! "$LR" =~ ^0*([.]0*)?$ ]]; then
             export UNFAVORSEG_LR="$LR"
         else

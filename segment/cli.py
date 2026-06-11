@@ -339,6 +339,21 @@ def cmd_uncertainty(args):
         print(r)
 
 
+def cmd_fine_report(args):
+    from .experiments import fine_report
+
+    tables = fine_report.run(
+        _parse_key_value_pairs(args.method_pred),
+        args.reference,
+        config=_fine_experiment_config(args),
+        pseudolabel_dir=args.pseudolabels,
+        out_dir=args.out,
+        data_source=args.data_source,
+    )
+    for r in tables["summary"]:
+        print(r)
+
+
 # ---------------------------------------------------------------------------
 # parser
 # ---------------------------------------------------------------------------
@@ -440,6 +455,20 @@ def build_parser() -> argparse.ArgumentParser:
                     help="process labelsTr/labelsTs or legacy pseudolabel dir")
     sp.add_argument("--out", default="results/uncertainty")
     sp.set_defaults(func=cmd_uncertainty)
+
+    sp = sub.add_parser("fine-report"); add_common(sp); add_class(sp)
+    sp.add_argument("--dataset", required=True)
+    sp.add_argument("--reference", required=True,
+                    help="held-out/reference label directory")
+    sp.add_argument("--method-pred", action="append", required=True,
+                    help="name=prediction_dir; repeat for each method")
+    sp.add_argument("--pseudolabels", default=None,
+                    help="process labelsTr/labelsTs or legacy pseudolabel dir")
+    sp.add_argument("--data-source", default="heldout_reference",
+                    choices=("real_sparse", "heldout_reference", "synthetic_fallback"),
+                    help="label the evidence source in the report")
+    sp.add_argument("--out", default="results/fine_report")
+    sp.set_defaults(func=cmd_fine_report)
 
     return p
 

@@ -219,18 +219,28 @@ for cls in "${CLASSES[@]}"; do
     nnUNetv2_preprocess -d "$cc_id" -c 3d_fullres
     "$PY" -m segment.cli make-splits --dataset "$cc_dataset" --protocol kfold --folds "$FOLDS"
 
-    echo "${CYAN}== 5. Train: proposed (CC), plain TransUNet, nnU-Net baseline ==${RESET}"
+    echo "${CYAN}== 5. Train: nnU-Net baseline, plain TransUNet, CC, WeakCC ==${RESET}"
     export UNFAVORSEG_LAMBDA="0.3"
     export UNFAVORSEG_EPOCHS="$EPOCHS"
+    export UNFAVORSEG_POS_ENCODING="${UNFAVORSEG_POS_ENCODING:-sinusoidal_3d}"
+    export UNFAVORSEG_CONFIDENCE_FLOOR="${UNFAVORSEG_CONFIDENCE_FLOOR:-0.1}"
+    export UNFAVORSEG_WEAK_KL_MAX="${UNFAVORSEG_WEAK_KL_MAX:-0.1}"
+    export UNFAVORSEG_CONSISTENCY="${UNFAVORSEG_CONSISTENCY:-1}"
+    export UNFAVORSEG_CONSISTENCY_WEIGHT="${UNFAVORSEG_CONSISTENCY_WEIGHT:-0.2}"
+    export UNFAVORSEG_CONSISTENCY_CONF="${UNFAVORSEG_CONSISTENCY_CONF:-0.75}"
+    export UNFAVORSEG_EMA_DECAY="${UNFAVORSEG_EMA_DECAY:-0.99}"
+    export UNFAVORSEG_EDGE_AWARE_TV="${UNFAVORSEG_EDGE_AWARE_TV:-1}"
+    export UNFAVORSEG_EDGE_TV_WEIGHT="${UNFAVORSEG_EDGE_TV_WEIGHT:-0.02}"
     if [[ ! "$LR" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
         die "--lr must be a non-negative number"
     fi
     if [[ ! "$LR" =~ ^0*([.]0*)?$ ]]; then
         export UNFAVORSEG_LR="$LR"
     fi
-    "$PY" -m nnunetv2.run.run_training "$cc_id" 3d_fullres "$FOLD" -tr nnUNetTrainerTransUNetCC
-    "$PY" -m nnunetv2.run.run_training "$cc_id" 3d_fullres "$FOLD" -tr nnUNetTrainerTransUNet
     "$PY" -m nnunetv2.run.run_training "$cc_id" 3d_fullres "$FOLD" -tr nnUNetTrainerUnfavorSeg
+    "$PY" -m nnunetv2.run.run_training "$cc_id" 3d_fullres "$FOLD" -tr nnUNetTrainerTransUNet
+    "$PY" -m nnunetv2.run.run_training "$cc_id" 3d_fullres "$FOLD" -tr nnUNetTrainerTransUNetCC
+    "$PY" -m nnunetv2.run.run_training "$cc_id" 3d_fullres "$FOLD" -tr nnUNetTrainerTransUNetWeakCC
 
     if [[ "$LAMBDA_SWEEP" -eq 1 ]]; then
         echo "${CYAN}== 6. lambda sweep (Table X) ==${RESET}"

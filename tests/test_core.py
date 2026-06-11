@@ -22,9 +22,15 @@ from segment.experiments.eval_metrics import (
     classwise_metrics,
     reliability_metrics,
 )
-from segment.fine.loss import ConfidenceConstrainedLoss
+from segment.fine.loss import (
+    ConfidenceConstrainedLoss,
+    WeakConfidenceConstrainedLoss,
+    confidence_weight_from_probfg,
+    consistency_loss,
+    edge_aware_total_variation,
+)
 from segment.fine.trainer import _DropProbfgChannel
-from segment.fine.transunet_wrapper import build_transunet
+from segment.fine.transunet_wrapper import _sinusoidal_3d_encoding, build_transunet
 
 
 def test_blocked_chainage_no_overlap_and_buffer():
@@ -118,6 +124,50 @@ def test_soft_target_uses_foreground_probability():
     assert abs(float(P[0, 1, 0, 0, 1]) - 0.7) < 1e-5
 
 
+def test_confidence_weight_is_lowest_at_uncertain_probfg():
+    probfg = torch.tensor([[[[[0.0, 0.5, 1.0]]]]])
+    w = confidence_weight_from_probfg(probfg, confidence_floor=0.1)
+    assert abs(float(w[0, 0, 0, 1]) - 0.1) < 1e-6
+    assert abs(float(w[0, 0, 0, 0]) - 1.0) < 1e-6
+    assert abs(float(w[0, 0, 0, 2]) - 1.0) < 1e-6
+
+
+def test_weak_loss_downweights_low_confidence_mistakes():
+    loss = WeakConfidenceConstrainedLoss(num_classes=2, lambda_kl=0.0, confidence_floor=0.1)
+    logits = torch.tensor([[[[[5.0, 5.0]]], [[[-5.0, -5.0]]]]])
+    target = torch.tensor([[[[0, 1]]]])
+    low_conf = torch.tensor([[[[[0.0, 0.5]]]]])
+    high_conf = torch.tensor([[[[[0.0, 1.0]]]]])
+    assert float(loss(logits, target, low_conf)) < float(loss(logits, target, high_conf))
+
+
+def test_consistency_loss_masks_low_confidence_teacher_voxels():
+    student = torch.tensor([[[[[0.0, 4.0]]], [[[0.0, -4.0]]]]])
+    teacher_uncertain = torch.zeros_like(student)
+    assert float(consistency_loss(student, teacher_uncertain, confidence_threshold=0.75)) == 0.0
+
+    teacher_confident = torch.tensor([[[[[0.0, -4.0]]], [[[0.0, 4.0]]]]])
+    assert float(consistency_loss(student, teacher_confident, confidence_threshold=0.75)) > 0.0
+
+
+def test_edge_aware_tv_relaxes_across_physical_edges():
+    fg = torch.tensor([[[[0.0, 1.0]]]])
+    flat_image = torch.zeros(1, 3, 1, 1, 2)
+    edge_image = flat_image.clone()
+    edge_image[:, :, :, :, 1] = 10.0
+    plain = edge_aware_total_variation(fg, flat_image, edge_aware=False)
+    edge_aware = edge_aware_total_variation(fg, edge_image, edge_aware=True)
+    assert float(edge_aware) < float(plain)
+
+
+def test_sinusoidal_3d_positional_encoding_varies_by_position():
+    enc = _sinusoidal_3d_encoding(12, (2, 3, 4), torch.device("cpu"), torch.float32)
+    assert enc.shape == (1, 12, 2, 3, 4)
+    a = enc[0, :, 0, 0, 0]
+    b = enc[0, :, 1, 2, 3]
+    assert not torch.allclose(a, b)
+
+
 def test_resolve_label_path_strict_per_class():
     io = pytest.importorskip("segment.io")
     with TemporaryDirectory() as tmp:
@@ -150,6 +200,49 @@ def test_list_predicted_cases_skips_probability_and_probfg_maps():
         ):
             (pred / name).touch()
         assert predictions.list_predicted_cases(pred) == ["case001"]
+
+
+def test_fine_report_outputs_copy_and_disagreement_metrics():
+    io = pytest.importorskip("segment.io")
+    fine_report = pytest.importorskip("segment.experiments.fine_report")
+    from segment.config import Config
+
+    geom = io.Geometry(
+        spacing=(1.0, 1.0, 1.0),
+        origin=(0.0, 0.0, 0.0),
+        direction=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+    )
+    case = "case001"
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        pred_dir = root / "pred"
+        ref_dir = root / "ref"
+        pseudo_dir = root / "pseudo"
+        out_dir = root / "out"
+        arr_ref = np.array([[[0, 1], [0, 1]]], dtype=np.uint8)
+        arr_pred = np.array([[[0, 1], [1, 1]]], dtype=np.uint8)
+        arr_pseudo = np.array([[[0, 0], [1, 1]]], dtype=np.uint8)
+        probfg = np.array([[[0.1, 0.45], [0.8, 0.9]]], dtype=np.float32)
+
+        io.write_volume(arr_pred, geom, pred_dir / f"{case}.nii.gz", dtype=np.uint8)
+        proba = np.stack([1.0 - arr_pred.astype(np.float32), arr_pred.astype(np.float32)])
+        pred_dir.mkdir(parents=True, exist_ok=True)
+        np.savez(pred_dir / f"{case}.npz", probabilities=proba)
+        io.write_volume(arr_ref, geom, ref_dir / f"{case}.nii.gz", dtype=np.uint8)
+        io.write_volume(arr_pseudo, geom, pseudo_dir / f"{case}.nii.gz", dtype=np.uint8)
+        io.write_volume(probfg, geom, pseudo_dir / f"probfg_{case}.nii.gz", dtype=np.float32)
+
+        tables = fine_report.run(
+            {"Weak": str(pred_dir)},
+            str(ref_dir),
+            config=Config(raw={"classes": ["unfavorable"], "geology_classes": ["unfavorable"]}),
+            pseudolabel_dir=str(pseudo_dir),
+            out_dir=str(out_dir),
+        )
+        assert tables["summary"][0]["Pseudo-copy ratio"] < 1.0
+        assert tables["summary"][0]["Low-conf disagreement"] > 0.0
+        assert (out_dir / "fine_report_summary.csv").exists()
+        assert (out_dir / "fine_report_disagreement.md").exists()
 
 
 def test_pseudolabel_probability_is_foreground_probability():
